@@ -1,0 +1,62 @@
+#!/usr/bin/env ./arm.pl
+	CMP #-1879048192, #1879048192
+	;; Expected CI:	0    N: 0    Z: 0    C: 1    V: 1
+	DIECC			; Carry Clear
+	DIEMI			; Minus
+	DIEEQ			; Equal
+	DIEVC			; No Overflow
+	DIEGT			; N = V
+
+	CMP #0, #0
+	DIENE
+	DIEGT
+	DIELT
+	DIEMI
+	
+
+	CMP #-5, #-5
+	DIENE
+	DIEGT
+	DIELT
+	DIEMI
+
+	CMP #9, #9
+	DIENE
+	DIEGT
+	DIELT
+	DIEMI
+
+	ADD R1, #0, #0
+	CMP R1, #0
+	DIENE
+	DIEGT
+	DIELT
+	DIEMI
+
+	ADD R1, R1, #9
+	CMP R1, #9
+	DIENE
+	DIEGT
+	DIELT
+	DIEMI
+	CMP R1, #10
+	DIEGT
+	DIEGE
+	DIEEQ
+
+	ADD R1, R1, #-5
+	CMP R1, #4
+	DIENE
+	DIEGT
+	DIELT
+	DIEMI
+	CMP R1, #1
+	DIELT
+	DIELE
+	DIEEQ
+	OUT R1
+
+	SUBS R2, R1, #4
+	;OUT R2, R1, #4
+	DIENE
+	
