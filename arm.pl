@@ -5,15 +5,28 @@ use integer;
 use Getopt::Long qw(:config gnu_getopt);
 use Pod::Usage;
 
-my $VERSION='20050506';# yyyymmdd
+my $VERSION='20050512';# yyyymmdd
 
 my $v = 0;
 my $help = 0;
 my $man = 0;
 my $q = 0;
-GetOptions('verbose|v' => \$v, 'quiet|q' => \$q, 'help|h|?' => \$help, 'man' => \$man, 'version' => \&show_version) or show_help();
+my $d = 0;
+GetOptions('debug|d' => \$d, 'verbose|v' => \$v, 'quiet|q' => \$q, 'help|h|?' => \$help, 'man' => \$man, 'version' => \&show_version) or show_help();
 show_help(1) if $help;
 show_help(2) if $man;
+
+if ( $d ) {
+    print "Spawning debugger...\n";
+    my @args = (
+		$v?('-'.('v'x$v)):'',
+		$q?'-q':'',
+	       );
+    system('perl','-d','arm.pl',
+	   @args,
+	   @ARGV);
+    exit();
+}
 
 $v = -1 if $q;
 
@@ -46,6 +59,15 @@ Be quiet. Do not show each instruction as it is executed
 =item B<--man>
 
 Display the full documentation, for which you may want to use a pager.
+
+=item B<--debug>, B<-d>
+
+This switch is actually pretty cool. When you use it, arm.pl respawns
+itself under perl(1)'s debugger so you can do neat tricks like
+
+I<./add.s -vd>
+
+and debug arm.pl while running add.s. Neat, eh?
 
 =back
 
@@ -125,18 +147,19 @@ my %conds = (
 	     NV => 1,# Never (do not use, not documented in PDF)
 	    );
 
-my %instructions = (
-		    '.text' => 2,# comma separated list of quoted strings and numeric constants; strings encoded as bytes, numbers encoded as bytes.
-		    '.data' => 2,# comma separated list of numeric constants, one 32-bit word each
-		    '.align' => 2,# numeric argument, advances PC so its value is 0 mod argument.
+# '.text' => 2,# comma separated list of quoted strings and numeric constants; strings encoded as bytes, numbers encoded as bytes.
+# '.data' => 2,# comma separated list of numeric constants, one 32-bit word each
+#'.align' => 2,# numeric argument, advances PC so its value is 0 mod argument.
 #  .text "foo",0,"bar",0177,0xff,10,13,0
 #  .data 4,5,0xffffeeee, -1, 42
 #  .align 8
+
+my %instructions = (
+		    # Unimplemented instructions
 		    LDM => 1,
 		    STM => 1,
 		    BIC => 1,
 		    ORR => 1,
-		    EOR => 1,
 		    AND => 1,
 		    TEQ => 1,
 		    TST => 1,
@@ -162,11 +185,12 @@ my %instructions = (
 		    CMN => 1,
 		    SUB => 1,
 		    ADC => 1,
+		    EOR => 1,
 
-		    # Implemented/unsupported instructions:
+		    # Implemented/unsupported instructions
 		    SWI => 1,
 
-		    # Nonstandard instructions:
+		    # Nonstandard instructions
 		    NOOP => 3,
 		    DIE => 3,
 		    END => 3,
@@ -299,6 +323,7 @@ while (my $line = <>) {
 	    }
 	}
 	else { throw("Bad DC{X} DC$1.\n") }
+	$lastlabel='';
 	next;
     }
     $lastlabel='';
@@ -311,7 +336,7 @@ while (my $line = <>) {
     $params ||= "";
     my @params = ();
     # FIXME: Flexible Operand 2
-    while ( $params =~ /\s*([\-A-Z0-9#]+\s*(,\s*($fopmatch).*)?|\[R\d+(,\s*($fopmatch)?\s*#-?\d+)?\]|=?\w+)\s*(,\s*|$)/gi ) {
+    while ( $params =~ /\s*([\-A-Z0-9#&]+\s*(,\s*($fopmatch).*)?|\[R\d+(,\s*($fopmatch)?\s*#-?\d+)?\]|=?\w+)\s*(,\s*|$)/gi ) {
 	if ( $2 && ($2 !~ /^\[/ || $5) ) { throw("Rotational and Shifting FOPs are not supported") }
 	push @params, $1;
 	vprint "Param: $1\n";
@@ -363,7 +388,7 @@ while ( $program[$reg[15]] ) {
     $S = 0;
     $B = 0;
     if ( $ins[2] eq 'S' ) {
-	print "TODO: S bits are not stored in R15! S support is Alpha only!\n";
+	vprint "TODO: S bits are not stored in R15! S support is Beta!\n";
 	$S = 1;
     }
     elsif ( $ins[2] eq 'B' ) { $B = 1 }
@@ -373,7 +398,7 @@ while ( $program[$reg[15]] ) {
     if ( $ins[0] eq 'B' or $ins[0] eq 'BL' ) { #{B|BL}{cond} label
 	@ins[3..$#ins] = translate(@ins[3..$#ins]);
 	#            If it's a label            Use the label   or if it's a number use that   Otherwise die
-	my $target = exists($labels{$ins[3]}) ? $labels{$ins[3]} : isnum($ins[3]) ? $ins[3] :
+	my $target = exists($labels{lc $ins[3]}) ? $labels{lc $ins[3]} : isnum($ins[3]) ? $ins[3] :
 	  throw("Error parsing branch. Could not find plausable destination for $ins[3].");
 
 	if ( $target ) {
@@ -446,6 +471,14 @@ while ( $program[$reg[15]] ) {
 	    vprint("Placing ".($B?'(byte) ':'')."$reg[$reg] in R$reg\n");
 	}
 	else { throw("Non-register target for LDR $reg[15]") }
+    }
+    elsif ( $ins[0] eq 'EOR' ) {
+	@ins[4..$#ins] = translate(@ins[4..$#ins]); # Do not translate 3
+	if ( defined(my $reg = isreg($ins[3])) ) {
+	    $reg[$reg] = armxor($ins[4],$ins[5],$S);
+	    vprint "Placing $ins[4]^$ins[5]=$reg[$reg] in R$reg\n";
+	}
+	else { throw("Non-register target for ADD $reg[15]") }
     }
     elsif ( $ins[0] eq 'STR' ) {
 	my $isaddr = 0;
@@ -543,15 +576,21 @@ sub translate {
 	elsif ( $_ =~ /^#(-?\d+)$/ ) { # Numbers
 	    $_ = $1+0;
 	}
-	elsif ( $_ =~ /^&(-?[\dA-F]+)$/i ) { # Hex Numbers (?)
+	elsif ( $_ =~ /^(?:&|#0x)(-?[\dA-F]+)$/i ) { # Hex Numbers (?)
 	    $_ = hex($1);
 	}
 	elsif ( $_ =~ /^(=?)(\w+)$/i ) {
-	    if ( $1 ) { vprint "NOT TRANSLATING =$2\n";return }
-	    my $ol = $_;
-	    $_ = exists($labels{lc $2}) && $labels{lc $2}=~ /^(\d+)\|(\d+)$/?getmem($labels{lc $2}[0],$labels{lc $2}[1]):$_;
-	    vprint "Translating $ol to $_\n";
+	    #if ( $1 ) { vprint "NOT TRANSLATING =$2\n";return }
+	    if ( $1 ) {
+		$_ = exists($labels{lc $2}) && $labels{lc $2}=~ /^(\d+)\|(\d+)$/?$1:$_;
+	    }
+	    else {
+		my $ol = $_;
+		$_ = exists($labels{lc $2}) && $labels{lc $2}=~ /^(\d+)\|(\d+)$/?getmem($labels{lc $2}[0],$labels{lc $2}[1]):$_;
+		vprint "Translating $ol to $_\n";
+	    }
 	}
+	if ( $_ =~ /^\d+$/ ) { $_+=0 }
 	# Let someone else deal with it.
     }
     return @_;
@@ -559,6 +598,7 @@ sub translate {
 
 sub armsub {
     my ($a,$b,$ci,$s) = @_;
+    $b += 0;
     return armadd($a,~$b,$ci,$s);
 }
 
@@ -578,6 +618,24 @@ sub armadd {
 	$C = $cis+$hba+$hbb>=2     ? 1:0;
 	$V = ($C xor $cis)||0;
 	vprint "CI: $cis\tN: $N\tZ: $Z\tC: $C\tV: $V\n";
+    }
+    return $result;
+}
+
+sub armxor {
+    my ($a,$b,$s) = @_;
+    my $result = $a^$b;
+    if ( $s ) {
+	vprint "Setting S flags\n";
+	#my $ci=(($a & 0x7FFFFFFF)+($b & 0x7FFFFFFF)) & 0x80000000;
+	my $hba = ($a & 0x80000000)?1:0;
+	my $hbb = ($b & 0x80000000)?1:0;
+
+	$N = $result & 0x80000000 ? 1:0;
+	$Z = $result == 0         ? 1:0;
+	$C = 0; # Use rotational or shifting FOP Carry Out.
+	#$V = 0;
+	vprint "CI: N/A\tN: $N\tZ: $Z\tC: $C\tV: N/A\n";
     }
     return $result;
 }
