@@ -5,7 +5,9 @@ use integer;
 use Getopt::Long qw(:config gnu_getopt);
 use Pod::Usage;
 
-my $VERSION='20050512';# yyyymmdd
+my $VERSION='20050523';# yyyymmdd
+
+$| = 1;
 
 my $v = 0;
 my $help = 0;
@@ -159,8 +161,6 @@ my %instructions = (
 		    LDM => 1,
 		    STM => 1,
 		    BIC => 1,
-		    ORR => 1,
-		    AND => 1,
 		    TEQ => 1,
 		    TST => 1,
 		    MSR => 1,
@@ -170,22 +170,24 @@ my %instructions = (
 		    MUL => 1,
 		    RSC => 1,
 		    RSB => 1,
-		    SBC => 1,
 
 		    # Implemented instructions
 		    B   => 1,
 		    BL  => 1,
 		    MOV => 1,
-		    # Beta instructions
+		    SUB => 1,
 		    CMP => 1,
 		    ADD => 1,
 		    LDR => 1,
 		    STR => 1,
+		    # Beta instructions
+		    EOR => 1,
 		    # Alpha instructions
 		    CMN => 1,
-		    SUB => 1,
 		    ADC => 1,
-		    EOR => 1,
+		    SBC => 1,
+		    ORR => 1,
+		    AND => 1,
 
 		    # Implemented/unsupported instructions
 		    SWI => 1,
@@ -280,6 +282,9 @@ while (my $line = <>) {
     next if $line =~ /^#!/;
     next if $line =~ /^\s*$/;
 
+    $line =~ s/;.+$//; # FIXME
+    $line =~ s/\s*$//;
+
     # Check for a label
     if ( $line =~ s/^(\w+):(\s+|$)// ) {
 	my ($label,$ws) = (lc $1,$2);
@@ -289,9 +294,7 @@ while (my $line = <>) {
 	next unless $ws;
     }
 
-    $line =~ s/;.+$//; # FIXME
     $line =~ s/^\s*//;
-    $line =~ s/\s*$//;
 
     if ( $line =~ /^DC([BDW])\s+(.+)$/i ) {
 	# FIXME
@@ -303,7 +306,7 @@ while (my $line = <>) {
 	    $bdw = 'W';
 	}
 	if ( !$lastlabel ) { print STDERR "WARN: No label for DC\n" }
-	if ( $vals =~ /,/ ) { print STDERR "WARN: More than one value unsupported at this time!\n" }
+	$vals =~ s/\"(.+?)(?<!\\)\"/MungeString($1)/ge;
 	if ( $bdw eq 'B' ) {
 	    $labels{$lastlabel}="$mempos|1";
 	    foreach ( split ',', $vals ) {
@@ -336,8 +339,7 @@ while (my $line = <>) {
     $params ||= "";
     my @params = ();
     # FIXME: Flexible Operand 2
-    while ( $params =~ /\s*([\-A-Z0-9#&]+\s*(,\s*($fopmatch).*)?|\[R\d+(,\s*($fopmatch)?\s*#-?\d+)?\]|=?\w+)\s*(,\s*|$)/gi ) {
-	if ( $2 && ($2 !~ /^\[/ || $5) ) { throw("Rotational and Shifting FOPs are not supported") }
+    while ( $params =~ /\s*([\-A-Z0-9#&x]+\s*(,\s*($fopmatch).*)?|\[R\d+(,\s*($fopmatch)?\s*(?:#-?\d+|R\d+|PC))?\]|=?\w+)\s*(,\s*|$)/gi ) {
 	push @params, $1;
 	vprint "Param: $1\n";
     }
@@ -352,6 +354,8 @@ push @program, 0;			# Last instruction should be 0 - See branch
 my ($N,$Z,$C,$V) = (0,0,0,0);
 my $S = 0;
 my $B = 0;
+
+my $fopco = 0;
 
 my @reg = ();
 print "Begining execution on instruction 0\n";
@@ -412,11 +416,12 @@ while ( $program[$reg[15]] ) {
 	else { throw("Error parsing branch. No label $ins[3]") }
     }
     elsif ( $ins[0] eq 'MOV' ) { # MOV{cond}{S} Rd, <Operand2>
-	throw("S flag unsupported due to unknown function") if $ins[2] eq 'S';
+	#throw("S flag unsupported due to unknown function") if $ins[2] eq 'S';
 	@ins[4..$#ins] = translate(@ins[4..$#ins]); # Do not translate 3
 	if ( defined(my $reg = isreg($ins[3])) ) {
 	    $reg[$reg] = $ins[4];
 	    vprint "Placing $ins[4] in R$reg\n";
+	    logicalsflags(1,$ins[4]) if $ins[2] eq 'S';
 	}
 	else { throw("Non-register target for MOV $reg[15]") }
     }
@@ -440,6 +445,14 @@ while ( $program[$reg[15]] ) {
 	@ins[4..$#ins] = translate(@ins[4..$#ins]); # Do not translate 3
 	if ( defined(my $reg = isreg($ins[3])) ) {
 	    $reg[$reg] = armsub($ins[4],$ins[5],1,$S);
+	    vprint "Placing $ins[4]-$ins[5]=$reg[$reg] in R$reg\n";
+	}
+	else { throw("Non-register target for SUB $reg[15]") }
+    }
+    elsif ( $ins[0] eq 'SBC' ) {
+	@ins[4..$#ins] = translate(@ins[4..$#ins]); # Do not translate 3
+	if ( defined(my $reg = isreg($ins[3])) ) {
+	    $reg[$reg] = armsub($ins[4],$ins[5],0,$S);
 	    vprint "Placing $ins[4]-$ins[5]=$reg[$reg] in R$reg\n";
 	}
 	else { throw("Non-register target for SUB $reg[15]") }
@@ -477,6 +490,22 @@ while ( $program[$reg[15]] ) {
 	if ( defined(my $reg = isreg($ins[3])) ) {
 	    $reg[$reg] = armxor($ins[4],$ins[5],$S);
 	    vprint "Placing $ins[4]^$ins[5]=$reg[$reg] in R$reg\n";
+	}
+	else { throw("Non-register target for ADD $reg[15]") }
+    }
+    elsif ( $ins[0] eq 'AND' ) {
+	@ins[4..$#ins] = translate(@ins[4..$#ins]); # Do not translate 3
+	if ( defined(my $reg = isreg($ins[3])) ) {
+	    $reg[$reg] = armand($ins[4],$ins[5],$S);
+	    vprint "Placing $ins[4]&$ins[5]=$reg[$reg] in R$reg\n";
+	}
+	else { throw("Non-register target for ADD $reg[15]") }
+    }
+    elsif ( $ins[0] eq 'ORR' ) {
+	@ins[4..$#ins] = translate(@ins[4..$#ins]); # Do not translate 3
+	if ( defined(my $reg = isreg($ins[3])) ) {
+	    $reg[$reg] = armor($ins[4],$ins[5],$S);
+	    vprint "Placing $ins[4]|$ins[5]=$reg[$reg] in R$reg\n";
 	}
 	else { throw("Non-register target for ADD $reg[15]") }
     }
@@ -542,7 +571,7 @@ sub isnum {
 sub isreg {
     my ($pos) = @_;
     $pos = uc $pos;
-    print "TODO: R15 only contains PC. See http://www.heyrick.co.uk/assembler/psr.html\n" if $pos eq 'PC' or $pos eq 'R15';
+    vprint "TODO: R15 only contains PC. See http://www.heyrick.co.uk/assembler/psr.html\n" if $pos eq 'PC' or $pos eq 'R15';
     return 15 if $pos eq 'PC';
     return 14 if $pos eq 'LR';
     if ( $pos =~ /^R(\d+)$/ ) {
@@ -556,13 +585,40 @@ sub translate {
 	my $offset = 0;
 	$_ =~ s/^\[(.+)\]$/$1/; # Address
 	# =Label => [PC,#offset]
+	my $offsetshift = 0;
 	if ( $_ =~ s/,\s*(.+)$// ) {
 	    my $fop = $1;
 	    vprint "FOP: $1\n";
-	    if ( $fop =~ /^#(-?\d+)$/ ) { # Numbers
+	    if ( $fop =~ /^([#&](-?[\da-fx]+)|R\d+|PC)$/i ) { # Numbers
 		$offset = $1;
+		translate($offset);
 	    }
-	    else { throw("Bad FOP - got through the parser but not the translator? $_") }
+	    elsif ( $fop =~ /^($fopmatch)\s+(R\d+|[#&][0-9a-fx]+)$/i ) {
+		my $fopkind = uc $1;
+		my $fopby = $2;
+		translate($fopby);
+		if ( $fopkind eq 'LSL' ) {
+		    $offsetshift = -1;
+		    $offset = $fopby;
+		    #$_ = $_ << $fopby;
+		}
+		elsif ( $fopkind eq 'LSR' ) {
+		    $offsetshift = 1;
+		    $offset = $fopby;
+		    #$_ = $_ >> $fopby;
+		}
+		elsif ( $fopkind eq 'ASR' ) {
+		    # $a & 0x80000000 to get high bit then shift then or
+		    $offsetshift = 2;
+		    $offset = $fopby;
+		}
+		elsif ( $fopkind eq 'ROR' ) {
+		    $offsetshift = 3;
+		    $offset = $fopby;
+		}
+		#print "FOP $fopkind by $fopby\n";
+	    }
+	    else { throw("Bad FOP - got through the parser but not the translator? $fop") }
 	}
 	print "TODO: R15 only contains PC. See http://www.heyrick.co.uk/assembler/psr.html\n" if $_ eq 'PC' or $_ eq 'R15';
 	if ( uc $_ eq 'PC' ) { $_ = $reg[15] }
@@ -570,8 +626,46 @@ sub translate {
 	    throw("$_ is not in range 0-15") unless $1 >= 0 && $1<=15;
 	    $reg[$1]||=0;
 	    vprint "Translating $_ to $reg[$1]\n";
-	    $_ = $reg[$1] + $offset;
-	    vprint "   (plus FOP Offset $offset equals $_)\n" if $offset;
+
+	    if ( !$offset ) { $_ = $reg[$1] }
+	    elsif ( $offsetshift == 0 ) {
+		$_ = $reg[$1] + $offset;
+		vprint "   (plus FOP Offset $offset equals $_)\n";
+	    }
+	    elsif ( $offsetshift == -1 ) {
+		my $carrymask = 1 << (32-$offset);
+		$fopco = $reg[$1]&$carrymask ?1:0;
+
+		$_ = $reg[$1] << $offset;
+		vprint "   (But shifted left $offset equals $_)\n";
+	    }
+	    elsif ( $offsetshift == 1 ) {
+		my $carrymask = 1 << ($offset-1);
+		$fopco = $reg[$1]&$carrymask ?1:0;
+
+		$_ = $reg[$1] >> $offset;
+		vprint "   (But shifted right $offset equals $_)\n";
+	    }
+	    elsif ( $offsetshift == 2 ) {
+		my $carrymask = 1 << ($offset-1);
+		$fopco = $reg[$1]&$carrymask ?1:0;
+		my $highbit = $reg[$1] & 0x80000000;
+		$_ = ($reg[$1] >> $offset);
+		if ( $highbit ) {
+		    my $highmask = $offset == 32 ? 0xFFFFFFFF : ((1<<$offset)-1)<<(32-$offset);
+		    $_ |= $highmask;
+		}
+		vprint "   (But shifted right $offset and high-bitized equals $_)\n";
+	    }
+	    elsif ( $offsetshift == 3 ) {
+		my $carrymask = 1 << ($offset-1);
+		$fopco = $reg[$1]&$carrymask ?1:0;
+
+		my $mask = ((1<<$offset)-1);
+		my $lowbits = ($reg[$1]&$mask)<<(32-$offset);
+		$_ = ($reg[$1]>>$offset)|$lowbits;
+		vprint "   (But rotated right $offset equals $_)\n";
+	    }
 	}
 	elsif ( $_ =~ /^#(-?\d+)$/ ) { # Numbers
 	    $_ = $1+0;
@@ -625,19 +719,38 @@ sub armadd {
 sub armxor {
     my ($a,$b,$s) = @_;
     my $result = $a^$b;
+    logicalsflags($s,$result);
+    return $result;
+}
+
+sub armand {
+    my ($a,$b,$s) = @_;
+    my $result = $a&$b;
+    logicalsflags($s,$result);
+    return $result;
+}
+
+sub armor {
+    my ($a,$b,$s) = @_;
+    my $result = $a|$b;
+    logicalsflags($s,$result);
+    return $result;
+}
+
+sub logicalsflags {
+    my ($s,$result) = @_;
     if ( $s ) {
 	vprint "Setting S flags\n";
 	#my $ci=(($a & 0x7FFFFFFF)+($b & 0x7FFFFFFF)) & 0x80000000;
-	my $hba = ($a & 0x80000000)?1:0;
-	my $hbb = ($b & 0x80000000)?1:0;
+	#my $hba = ($a & 0x80000000)?1:0;
+	#my $hbb = ($b & 0x80000000)?1:0;
 
 	$N = $result & 0x80000000 ? 1:0;
 	$Z = $result == 0         ? 1:0;
-	$C = 0; # Use rotational or shifting FOP Carry Out.
+	$C = $fopco; # Use rotational or shifting FOP Carry Out.
 	#$V = 0;
 	vprint "CI: N/A\tN: $N\tZ: $Z\tC: $C\tV: N/A\n";
     }
-    return $result;
 }
 
 #sub armcmp {
@@ -662,3 +775,15 @@ sub setmem {
     else { return substr($memory,$index,4,pack('N',$content)) }
 }
 
+sub MungeString {
+    my ($tmp) = @_;
+    vprint "Munging string $tmp\n";
+    $tmp =~ s/\\\\/\\/g;
+    my $out = '';
+    foreach(split('',$tmp)) {
+	$out.='#'.ord($_).', ';
+    }
+    $out =~ s/\,\s*$//g;
+    vprint "  $out\n";
+    return $out;
+}
