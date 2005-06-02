@@ -1,0 +1,34 @@
+20050602
+	- arm.pl now uses 4 byte instructions and to store
+	  instructions in memory. There may be bugs.
+	- Instructions are now referred to by file name and line number.
+	- Fixed and enhanced --version.
+	- Various bugs have been fixed as per your comments, including an
+	  annoyance with translate().
+	- Implemented the new ARM Debugger. Read perldoc arm.pl.
+	- Implemented OUTB, output byte(s).
+
+20050523
+	- Added support for strings in order to get strcmp.s to run
+	- Fixed various FOP weirdness
+	- Implemented FOPs: LSL, LSR, ASR, ROR. ROX still unimplemented.
+	  Added FOP CO Support
+	- Implemented AND, ORR and SBC (Subtract with Carry)
+	- SUB, CMP, ADD, LDR and STR are now out of beta
+	- Made feeble attempt to get EOL comments working
+	- Wrote primes.s, divide.s, isprime.s, countchar.s, fibonacci.s,
+	  strcmp.s
+
+20050512
+	- Added support for -d flag: Run with perl(1) debugger
+	- Added EOR
+	- Fixed bug where Label1: DCD #0 <CR> DCD #1, Label1 would point to 1
+	  and not 0
+	- Fixed label case-sensitivity issue
+	- Fixed bug in parser which caused hex numbers with & to work only
+	  in DCx.
+	- Fixed (?) bug so that =Label would work outside of LDR and STR.
+	- Numberize more numbers in more places
+	
+20050506
+	- Initial release

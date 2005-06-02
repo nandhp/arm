@@ -46,7 +46,7 @@ PrimeLoop:
 	;BEQ YesPrime
 
 	;OUT R9
-	BL OldMod
+	BL Mod
 	;OUT R10
 
 	CMP R0, #0

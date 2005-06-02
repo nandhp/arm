@@ -1,7 +1,7 @@
 #!/usr/bin/perl ./arm.pl isprime.s divide.s
 Main:
 	; Max
-	MOV R9, #500
+	MOV R9, #50
 
 	MOV R3, #2
 	MOV R2, R3
@@ -16,3 +16,4 @@ Loop:	MOV R2, R3
 	ADD R3, R3, #2
 	CMP R3, R9
 	BLE Loop
+	END

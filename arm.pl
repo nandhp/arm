@@ -4,8 +4,9 @@ use warnings;
 use integer;
 use Getopt::Long qw(:config gnu_getopt);
 use Pod::Usage;
+use Term::ReadLine;
 
-my $VERSION='20050523';# yyyymmdd
+my $VERSION='20050602';# yyyymmdd
 
 $| = 1;
 
@@ -18,16 +19,24 @@ GetOptions('debug|d' => \$d, 'verbose|v' => \$v, 'quiet|q' => \$q, 'help|h|?' =>
 show_help(1) if $help;
 show_help(2) if $man;
 
+my $term = new Term::ReadLine 'ARM Debugger';
+my $prompt = '<DB> ';
+my $OUT = \*STDOUT;
+my $debugnext = 1; # Stop at next statement
+my $defaultc = 0;
 if ( $d ) {
-    print "Spawning debugger...\n";
-    my @args = (
-		$v?('-'.('v'x$v)):'',
-		$q?'-q':'',
-	       );
-    system('perl','-d','arm.pl',
-	   @args,
-	   @ARGV);
-    exit();
+    #$q=0;
+    print "\narm.pl debugger, version $VERSION\n\nTry 'perldoc arm.pl' for help\n\n";
+    $OUT = $term->OUT if $term->OUT;
+#    print "Spawning debugger...\n";
+#    my @args = (
+#		$v?('-'.('v'x$v)):'',
+#		$q?'-q':'',
+#	       );
+#    system('perl','-d','arm.pl',
+#	   @args,
+#	   @ARGV);
+#    exit();
 }
 
 $v = -1 if $q;
@@ -64,12 +73,13 @@ Display the full documentation, for which you may want to use a pager.
 
 =item B<--debug>, B<-d>
 
-This switch is actually pretty cool. When you use it, arm.pl respawns
-itself under perl(1)'s debugger so you can do neat tricks like
+Run the provided assembler code under the debugger. Even though this
+switch no longer does the old "re-run arm.pl under perldebug(1)" it is
+still pretty cool.
 
-I<./add.s -vd>
+=item B<--version>
 
-and debug arm.pl while running add.s. Neat, eh?
+Display the arm.pl version number and check for updates
 
 =back
 
@@ -78,17 +88,116 @@ and debug arm.pl while running add.s. Neat, eh?
 B<arm.pl> will parse the given input file(s) as ARM assembler and
 attempt to execute them.
 
+=head1 ARCHITECTURE DOCUMENTATION
+
+Documentation for the ARM Architecture is available from the following
+sources:
+
+=over 8
+
+=item B<src/docs>
+
+The src/docs directory contains most of the documentation on the ARM
+Architcture. It is available in the main tree only, and is not
+included in the source distribution.
+
+=item B<The ARM Status Blog>
+
+The ARM Status Blog includes all of the documentation available in
+src/docs as well as release distributions and more.
+
+L<http://nand.homelinux.com:8888/~nand/blosxom/blosxom.cgi>
+
+=back
+
+=head1 DEBUGGER
+
+The arm.pl interactive debugger will be used whenever the program is
+run with the B<--debug> (B<-d>) switch. The following commands are
+available in the debugger:
+
+=over 8
+
+=item B<b>[ [I<filename>:]I<line>]
+
+Set a breakpoint. If no filename is specified, defaults to the current
+file, and if no line number is specified, defaults to the current line.
+
+=item B<d>[ [I<filename>:]I<line>]
+
+Clear a previously-set breakpoint. See B<b>.
+
+=item B<l>[ [I<filename>][:][I<line>]]
+
+List the next ten lines of I<filename>, starting at I<line> or
+defaulting to various sensible defaults which involve you being able
+to enter B<l> repeatedly to view more of the file, like the perl
+debugger.
+
+=item B<v>[ [I<filename>][:][I<line>]]
+
+Same as B<l>, except the first window it displays will also show
+several lines prior to the specified (or default) line.
+
+=item B<r>[x|b]I<number>
+
+Display the contents of the given register. If B<x> is provided,
+displays it in hex, if B<b> is provided, displays it as byte(s).
+
+=item B<n>
+
+Execute the next instruction and display another prompt.
+
+=item B<c>
+
+Execute the next instruction and continue until a breakpoint is
+reached or the program terminates.
+
+=item B<q>
+
+Quit.
+
+=back
+
+=head1 BUGS
+
+None
+
+=head1 AUTHOR
+
+nandhp <nandhp AT myrealbox WITHNOSPAM com>
+
 =cut
 
+sub show_version {
+    print "arm.pl version $VERSION\n\nChecking for updates...";
+    my @vup = split("\n",eval('use LWP::Simple;return get("http://nand.homelinux.com:8888/~nand/blosxom/version.cgi")')||'');
+    print "\n\n";
+    if ( !@vup ) {
+	print "There was an error checking for updates.\nPlease try back later.\n";
+    }
+    elsif ( $vup[0] < $VERSION ) {
+	print "You are running the development version.\nThere are no updates available.\n";
+    }
+    elsif ( $vup[0] == $VERSION ) {
+	print "You are running the latest version.\nThere are no updates available.\n";
+    }
+    elsif ( $vup[0] > $VERSION ) {
+	print "The latest version is $vup[0].\nFor more information on this version, visit\n$vup[1]\n";
+    }
+    exit(1);
+}
+
 sub show_help {
-    $_[0]||=0;
-    if ( $_[0] == 0 ) {
+    my ($arg) = @_;
+    $arg ||= 0;
+    if ( $arg == 0 ) {
 	pod2usage(-verbose => 0,-msg => " ");
     }
-    elsif ( $_[0] == 1 ) {
+    elsif ( $arg == 1 ) {
 	pod2usage(-verbose => 1,-msg => "arm.pl version $VERSION\n");
     }
-    elsif ( $_[0] == 2 ) {
+    elsif ( $arg == 2 ) {
 	pod2usage(-verbose => 2,-msg => "arm.pl version $VERSION\n");
     }
     else {
@@ -149,12 +258,7 @@ my %conds = (
 	     NV => 1,# Never (do not use, not documented in PDF)
 	    );
 
-# '.text' => 2,# comma separated list of quoted strings and numeric constants; strings encoded as bytes, numbers encoded as bytes.
-# '.data' => 2,# comma separated list of numeric constants, one 32-bit word each
-#'.align' => 2,# numeric argument, advances PC so its value is 0 mod argument.
-#  .text "foo",0,"bar",0177,0xff,10,13,0
-#  .data 4,5,0xffffeeee, -1, 42
-#  .align 8
+# This will probably house opcodes at some point.
 
 my %instructions = (
 		    # Unimplemented instructions
@@ -221,6 +325,8 @@ my %operand_flags = (
 		     RRX => 1,
 		    );
 my @program = ();
+my @lines = ();
+my @breaks = ();
 my %labels = ();
 # A program is an array of arrays.
 #
@@ -229,7 +335,7 @@ my %labels = ();
 # array, looks at the first element, and passes it to the appropriate
 # code: The code for "BRANCH" say.
 #
-# Labels are stored seperately and are aray indexes.
+# Labels are stored seperately and are array indexes.
 #
 # Example:
 #
@@ -274,7 +380,9 @@ print "Parsing source...\n";
 # Process the program
 my $insnum = 0;
 my $mempos = 0;
+my $includefn = scalar(@ARGV)>1?1:0;
 my $lastlabel='';
+
 while (my $line = <>) {
     $line =~ s/[\r\n]//g;
     vprint "$line \n";
@@ -288,9 +396,12 @@ while (my $line = <>) {
     # Check for a label
     if ( $line =~ s/^(\w+):(\s+|$)// ) {
 	my ($label,$ws) = (lc $1,$2);
+	if ( $labels{$label} ) {
+	    print "WARN: Duplicate label $1\n";
+	}
 	$lastlabel=$label;
-	vprint "Number: $insnum\t Label: $label\n";
-	$labels{$label}=$insnum;
+	vprint "Memory: $mempos\t Label: $label\n";
+	$labels{$label}=$mempos;
 	next unless $ws;
     }
 
@@ -301,11 +412,13 @@ while (my $line = <>) {
 	my $bdw = uc $1;
 	my $vals = $2;
 	vprint "Processing DC$1...\n";
-	if ( $bdw eq 'D' ) {
-	    print "WARN: Processing DCD as DCW\n";
-	    $bdw = 'W';
+	if ( $bdw eq 'D' ) {		# Define Constant Data doesn't act
+	    $bdw = 'W';			# constant here... See ARMBook p29
+	    #print "WARN: Processing DCD as DCW\n";
 	}
-	if ( !$lastlabel ) { print STDERR "WARN: No label for DC\n" }
+
+	# A quote followed by a bunch of stuff and then another quote
+	# that is not preceeded by a backslash.
 	$vals =~ s/\"(.+?)(?<!\\)\"/MungeString($1)/ge;
 	if ( $bdw eq 'B' ) {
 	    $labels{$lastlabel}="$mempos|1";
@@ -317,6 +430,10 @@ while (my $line = <>) {
 	    }
 	}
 	elsif ( $bdw eq 'W' ) {
+	    while ( $mempos%4 ) {	# ALIGN
+		setmem($mempos,0,1);
+		$mempos++;
+	    }
 	    $labels{$lastlabel}="$mempos|0";
 	    foreach ( split ',', $vals ) {
 		s/^\s*|\s*$//g;
@@ -329,7 +446,15 @@ while (my $line = <>) {
 	$lastlabel='';
 	next;
     }
+
     $lastlabel='';
+
+    while ( $mempos%4 ) {		# ALIGN
+	setmem($mempos,0,1);
+	$mempos++;
+    }
+
+    next if $line =~ /^ALIGN\s*/i;	# ALIGN is automatic
 
     # Parse instruction
     my ($ins,$cond,$extra,$params) = $line =~ /^($insmatch)($condmatch)?($xmatch)?(?:\s+(.+))?$/i or throw("Parse Error");
@@ -346,10 +471,21 @@ while (my $line = <>) {
     my @instruction = ($ins,$cond,$extra);
     push @instruction, @params;
     push @program, \@instruction;
+    $lines[$mempos/4] = $includefn?"$ARGV:$.":"$.";
+    # TODO: Use real instruction representations
+    setmem($mempos,$insnum,0);
+    $mempos+=4;
+
     $insnum++;
     vprint "\n";
 }
+continue { close ARGV if eof }		# To reset $.
+  ;
+
 push @program, 0;			# Last instruction should be 0 - See branch
+
+my $unknownid = 0;
+
 # Run it
 my ($N,$Z,$C,$V) = (0,0,0,0);
 my $S = 0;
@@ -359,33 +495,202 @@ my $fopco = 0;
 
 my @reg = ();
 print "Begining execution on instruction 0\n";
-$reg[15]=0; # PC
-while ( $program[$reg[15]] ) {
-    #my $pc = $reg[15]; # Convenience
-    my $oldpc = $reg[15];
-    last unless $program[$reg[15]];
-    my @ins = @{$program[$reg[15]]};
-    print("Executing $reg[15]: ".join(' ',@ins[0..2]).' '.join(', ',@ins[3..$#ins])."\n") if $v > -1;
+$reg[15]=8; # PC, 2 ahead, multiply by four
+$insnum = 0;
+
+my $rmeight;
+my $died = 0;
+
+INSTRUCTION:
+while ( $program[$insnum = getmem($rmeight = $reg[15]-8,0)||0] ) {
+    my $lineflags = '';
+
+    my $oldpc = $reg[15]; # Save old PC so if it changes we don't increment
+
+    last unless $program[$insnum];
+    my @ins = @{$program[$insnum]};
+
+    my $line = 1?'unknown:'.$unknownid:'phantom instruction';
+    if ( !defined($lines[$rmeight/4]) ) {
+	print "WARN: Unknown source for instruction at memory location $reg[15]-8=$rmeight\n";
+	#throw("Bad PC: $reg[15]");
+	$lines[$rmeight/4] = $line;
+	$unknownid++;
+    }
+    else { $line = $lines[$rmeight/4] }
+
+    if ( $breaks[$rmeight/4]||0 ) {
+	$debugnext = 1;
+	$lineflags .= 'b';
+    }
+
+    print("$line:".($lineflags||'')."\t".join(' ',@ins[0..2]).' '.join(', ',@ins[3..$#ins])."\n") if ($v > -1 or $debugnext) and !$died;
+
+    if ( $d ) { #Debugger
+	my ($readfile,$listline,$startline) = ('',0,0);
+	my $debugline;
+	print "$died\nUse 'q' to quit the debugger.\n\n" if $died;
+	while ( $debugnext && (defined($debugline = $term->readline($prompt))||(print("\n\n"),exit(1))) ) {
+	    $term->addhistory($debugline) if $debugline =~ /\S/;
+	    $debugline =~ s/^\s*//g;
+	    $debugline =~ s/\s*$//g;
+	    $debugline =~ s/^\s{2,}/ /g;
+	    if ( lc $debugline eq 'q' ) { print "\n";exit(1) }
+	    elsif ( lc $debugline =~ /^r([xsb]?)(\d+)$/ ) {
+		$reg[$2]||=0;
+		if ( $1 eq 'x' or $1 eq 's' ) { # S for compatibility with OUT
+		    printf "R$2 = 0x%08x\n",$reg[$2];
+		}
+		elsif ( $1 eq 'b' ) {
+		    my $rid=$2;
+		    my $str = pack('N',$reg[$rid]);
+		    $str =~ s/^\0+(.+)$/$1/;
+		    printf "R$rid = \"%s\"\n",$str;
+		}
+		else {
+		    print "R$2 = $reg[$2]\n";
+		}
+	    }
+	    elsif ( lc $debugline =~ /^([bd])( ([^\s:]*?):?(\d+))?$/ ) {
+		my $sr = $1 eq 'b'?1:0;
+		if ( !$2 ) {
+		    $breaks[$rmeight/4]=$sr;
+		    redo INSTRUCTION;
+		}
+		else {
+		    my ($file,$linenum) = ($3,$4);
+		    ($file) = $lines[$rmeight/4] =~ /^(.+):\d+$/ unless $file;
+		    $file = $ARGV unless $file;
+
+		    my $destindex = 0;
+		    my $found = 0;
+		    my $bcmp = $includefn?"$file:$linenum":$linenum;
+		    foreach ( @lines ) {
+			if ( $_ eq $bcmp ) {
+			    $breaks[$destindex]=$sr;
+			    $found = 1;
+			    last;
+			}
+			$destindex++;
+		    }
+		    if ( !$found ) {
+			print "Can't set breakpoint at $file:$linenum\n";
+		    }
+		    else {
+			redo INSTRUCTION;
+		    }
+		}
+	    }
+	    elsif ( lc $debugline =~ /^([vl])( ([^\s:]*?):?(\d+)?)?$/i ) {
+		my $view = lc $1 eq 'v'?1:0;
+
+		if ( $3 || $4 || !$readfile || !$listline || !$startline ) {
+		    ($readfile,$listline) = ($3,$4);
+		    ($readfile) = $lines[$rmeight/4] =~ /^(.+):\d+$/
+		      unless $readfile;
+		    $readfile = $ARGV unless $readfile;
+
+		    if ( $3 ) { $listline = 1 }
+		    else {
+			($listline) = $lines[$rmeight/4] =~ /^.+:(\d+)$/
+			  unless $listline;
+			$listline = $lines[$rmeight/4] unless $listline;
+			$startline = $view?$listline-4:$listline;
+		    }
+		}
+
+		open SCRIPT, $readfile;
+		my $readline = 1;
+		until ( $readline >= $startline ) {
+		    $readline++;
+		    <SCRIPT>;
+		}
+		while ( my $linetxt = <SCRIPT> ) {
+		    my $bcmp = $includefn?"$readfile:$readline":$readline;
+		    my $found = -1;
+		    my $destindex = 0;
+		    foreach ( @lines ) {
+			next unless defined($_);
+			if ( $_ eq $bcmp ) {
+			    $found = $destindex;
+			    last;
+			}
+			$destindex++;
+		    }
+		    if ( $found < 0 ) {
+			print "$bcmp\t$linetxt";
+		    }
+		    else {
+			my $lineflags = '';
+			$lineflags .= 'b' if $breaks[$destindex]||0;
+			$lineflags .= '>>' if $bcmp eq $line;
+			$lineflags .= ' ';
+			print("$bcmp:".($lineflags||'')."\t$linetxt");
+		    }
+		    $readline++;
+		    last if $readline>$startline+9;
+		}
+		$startline = $readline;
+		if ( eof(SCRIPT) ) {
+		    $startline--;
+		}
+	    }
+	    elsif ( lc $debugline =~ /^c$/ or ($debugline eq '' and $defaultc)) {
+		if ( $died ) { print "Not running\n";next }
+		$debugnext=0;
+		$defaultc=1;
+		last;
+	    }
+	    elsif ( lc $debugline eq 'n' or ($debugline eq '' and !$defaultc)) {
+		if ( $died ) { print "Not running\n";next }
+		$debugnext=1;
+		$defaultc=0;
+		last;
+	    }
+	    else { print "Unrecognized command\n" }
+	}
+	close SCRIPT;
+    }
+    exit(1) if $died;
+
+    #
+    # Format of @ins
+    #
+    # @ins = ('B', 'AL', '', 'foo');
+    #
+    # $ins[0] = "Opcode" (%instructions)
+    # $ins[1] = Conditional (%conds)
+    # $ins[2] = Extra (%extras)
+    # $ins[3..$#ins] = Arguments
+    #
 
     # Check conditional
     if ( $ins[1] eq 'AL' ) { }
-    elsif ( $ins[1] eq 'NV' ) { $reg[15]++; next }
-    elsif ( $ins[1] eq 'EQ' ) { vprint "EQ: Z=$Z\n";($reg[15]++,next) if !$Z } # Skip if NE
-    elsif ( $ins[1] eq 'NE' ) { vprint "NE: Z=$Z\n";($reg[15]++,next) if $Z }
-    elsif ( $ins[1] eq 'CS' ) { vprint "CS: C=$C\n";($reg[15]++,next) if !$C }
-    elsif ( $ins[1] eq 'CC' ) { vprint "CC: C=$C\n";($reg[15]++,next) if $C }
-    elsif ( $ins[1] eq 'MI' ) { vprint "MI: N=$N\n";($reg[15]++,next) if !$N }
-    elsif ( $ins[1] eq 'PL' ) { vprint "PL: N=$N\n";($reg[15]++,next) if $N }
-    elsif ( $ins[1] eq 'VS' ) { vprint "VS: V=$V\n";($reg[15]++,next) if !$V }
-    elsif ( $ins[1] eq 'VC' ) { vprint "VC: V=$V\n";($reg[15]++,next) if $V }
+    elsif ( $ins[1] eq 'NV' ) { $reg[15]+=4; next }
+    elsif ( $ins[1] eq 'EQ' ) { vprint "EQ: Z=$Z\n";
+				($reg[15]+=4,next) if !$Z } # Skip if NE
+    elsif ( $ins[1] eq 'NE' ) { vprint "NE: Z=$Z\n";
+				($reg[15]+=4,next) if $Z }
+    elsif ( $ins[1] eq 'CS' ) { vprint "CS: C=$C\n";
+				($reg[15]+=4,next) if !$C }
+    elsif ( $ins[1] eq 'CC' ) { vprint "CC: C=$C\n";
+				($reg[15]+=4,next) if $C }
+    elsif ( $ins[1] eq 'MI' ) { vprint "MI: N=$N\n";
+				($reg[15]+=4,next) if !$N }
+    elsif ( $ins[1] eq 'PL' ) { vprint "PL: N=$N\n";
+				($reg[15]+=4,next) if $N }
+    elsif ( $ins[1] eq 'VS' ) { vprint "VS: V=$V\n";
+				($reg[15]+=4,next) if !$V }
+    elsif ( $ins[1] eq 'VC' ) { vprint "VC: V=$V\n";
+				($reg[15]+=4,next) if $V }
     elsif ( $ins[1] eq 'GE' ) { vprint "GE: N=$N,V=$V,Z=$Z\n";
-				($reg[15]++,next) if $V != $N }
+				($reg[15]+=4,next) if $V != $N }
     elsif ( $ins[1] eq 'LT' ) { vprint "LT: N=$N,V=$V,Z=$Z\n";
-				($reg[15]++,next) if $V == $N }
+				($reg[15]+=4,next) if $V == $N }
     elsif ( $ins[1] eq 'GT' ) { vprint "GT: N=$N,V=$V,Z=$Z\n";
-				($reg[15]++,next) if $V != $N || $Z }
+				($reg[15]+=4,next) if $V != $N || $Z }
     elsif ( $ins[1] eq 'LE' ) { vprint "LE: N=$N,V=$V,Z=$Z\n";
-				($reg[15]++,next) if $V == $N && !$Z  }
+				($reg[15]+=4,next) if $V == $N && !$Z  }
     else { throw("Unsupported conditional $ins[1]") }
 
     # Extra flags
@@ -408,10 +713,11 @@ while ( $program[$reg[15]] ) {
 	if ( $target ) {
 	    vprint "Branching to instruction $target label $ins[3]\n";
 	    if ( $ins[0] eq 'BL' ) {
-		$reg[14]=$reg[15]+1;
+		$reg[14]=$reg[15]-4; # PC+8-8+4
 		vprint "Link: Return to instruction $reg[14]\n";
 	    }
 	    $reg[15]=$target;
+	    modreg(15);
 	}
 	else { throw("Error parsing branch. No label $ins[3]") }
     }
@@ -422,6 +728,7 @@ while ( $program[$reg[15]] ) {
 	    $reg[$reg] = $ins[4];
 	    vprint "Placing $ins[4] in R$reg\n";
 	    logicalsflags(1,$ins[4]) if $ins[2] eq 'S';
+	    modreg($reg);
 	}
 	else { throw("Non-register target for MOV $reg[15]") }
     }
@@ -430,6 +737,7 @@ while ( $program[$reg[15]] ) {
 	if ( defined(my $reg = isreg($ins[3])) ) {
 	    $reg[$reg] = armadd($ins[4],$ins[5],0,$S);
 	    vprint "Placing $ins[4]+$ins[5]=$reg[$reg] in R$reg\n";
+	    modreg($reg);
 	}
 	else { throw("Non-register target for ADD $reg[15]") }
     }
@@ -438,6 +746,7 @@ while ( $program[$reg[15]] ) {
 	if ( defined(my $reg = isreg($ins[3])) ) {
 	    $reg[$reg] = armadd($ins[4],$ins[5],$C?1:0,$S);
 	    vprint "Placing $ins[4]+$ins[5]=$reg[$reg] in R$reg\n";
+	    modreg($reg);
 	}
 	else { throw("Non-register target for ADC $reg[15]") }
     }
@@ -446,6 +755,7 @@ while ( $program[$reg[15]] ) {
 	if ( defined(my $reg = isreg($ins[3])) ) {
 	    $reg[$reg] = armsub($ins[4],$ins[5],1,$S);
 	    vprint "Placing $ins[4]-$ins[5]=$reg[$reg] in R$reg\n";
+	    modreg($reg);
 	}
 	else { throw("Non-register target for SUB $reg[15]") }
     }
@@ -454,6 +764,7 @@ while ( $program[$reg[15]] ) {
 	if ( defined(my $reg = isreg($ins[3])) ) {
 	    $reg[$reg] = armsub($ins[4],$ins[5],0,$S);
 	    vprint "Placing $ins[4]-$ins[5]=$reg[$reg] in R$reg\n";
+	    modreg($reg);
 	}
 	else { throw("Non-register target for SUB $reg[15]") }
     }
@@ -482,6 +793,7 @@ while ( $program[$reg[15]] ) {
 	if ( defined(my $reg = isreg($ins[3])) ) {
 	    $reg[$reg] = $isaddr?$ins[4]:getmem($ins[4],$B?1:0);
 	    vprint("Placing ".($B?'(byte) ':'')."$reg[$reg] in R$reg\n");
+	    modreg($reg);
 	}
 	else { throw("Non-register target for LDR $reg[15]") }
     }
@@ -490,6 +802,7 @@ while ( $program[$reg[15]] ) {
 	if ( defined(my $reg = isreg($ins[3])) ) {
 	    $reg[$reg] = armxor($ins[4],$ins[5],$S);
 	    vprint "Placing $ins[4]^$ins[5]=$reg[$reg] in R$reg\n";
+	    modreg($reg);
 	}
 	else { throw("Non-register target for ADD $reg[15]") }
     }
@@ -498,6 +811,7 @@ while ( $program[$reg[15]] ) {
 	if ( defined(my $reg = isreg($ins[3])) ) {
 	    $reg[$reg] = armand($ins[4],$ins[5],$S);
 	    vprint "Placing $ins[4]&$ins[5]=$reg[$reg] in R$reg\n";
+	    modreg($reg);
 	}
 	else { throw("Non-register target for ADD $reg[15]") }
     }
@@ -506,6 +820,7 @@ while ( $program[$reg[15]] ) {
 	if ( defined(my $reg = isreg($ins[3])) ) {
 	    $reg[$reg] = armor($ins[4],$ins[5],$S);
 	    vprint "Placing $ins[4]|$ins[5]=$reg[$reg] in R$reg\n";
+	    modreg($reg);
 	}
 	else { throw("Non-register target for ADD $reg[15]") }
     }
@@ -533,7 +848,14 @@ while ( $program[$reg[15]] ) {
 	vprint "No Op\n";
     }
     elsif ( $ins[0] eq 'DIE' ) { # Nonstandard instruction
-	throw("Program died on instruction $reg[15]");
+	if ( $d ) {
+	    $died = "Program died at $line";
+	    $debugnext = 1;
+	    next;
+	}
+	else {
+	    throw("Program died at $line");
+	}
     }
     elsif ( $ins[0] eq 'END' ) { last } # Nonstandard instruction
     elsif ( $ins[0] eq 'OUT' ) { # Nonstandard instruction
@@ -541,7 +863,12 @@ while ( $program[$reg[15]] ) {
 	@ins[3..$#ins] = translate(@ins[3..$#ins]);
 	for ( my $i=3;$i<= $#ins;$i++ ) {
 	    if ( $S ) {
-		printf "$oldins[$i] = %#8x\n",$ins[$i];
+		printf "$oldins[$i] = 0x%08x\n",$ins[$i];
+	    }
+	    elsif ( $B ) {
+		my $str = pack('N',$ins[$i]);
+		$str =~ s/^\0+(.+)$/$1/;
+		printf "$oldins[$i] = \"%s\"\n",$str;
 	    }
 	    else {
 		print "$oldins[$i] = $ins[$i]\n";
@@ -553,9 +880,10 @@ while ( $program[$reg[15]] ) {
     }
     else {
 	# Undefined instruction.
-	throw("Undefined instruction at $reg[15]");
+	throw("Undefined instruction at $line");
     }
-    $reg[15]++ unless $reg[15] != $oldpc; # If it's different don't bump it
+
+    $reg[15]+=4;			# Next instruction
 }
 print "Program complete.\n";
 
@@ -581,38 +909,41 @@ sub isreg {
     return undef;
 }
 sub translate {
-    foreach ( @_ ) {
+    my @args = @_;
+    foreach ( @args ) {
 	my $offset = 0;
 	$_ =~ s/^\[(.+)\]$/$1/; # Address
 	# =Label => [PC,#offset]
 	my $offsetshift = 0;
-	if ( $_ =~ s/,\s*(.+)$// ) {
+	if ( $_ =~ s/,\s*(.+)$// ) { # If there is a FOP
 	    my $fop = $1;
 	    vprint "FOP: $1\n";
 	    if ( $fop =~ /^([#&](-?[\da-fx]+)|R\d+|PC)$/i ) { # Numbers
-		$offset = $1;
-		translate($offset);
+		# If it is a number or register, you add that to the
+		# result
+		$offset = translate($1);
 	    }
 	    elsif ( $fop =~ /^($fopmatch)\s+(R\d+|[#&][0-9a-fx]+)$/i ) {
 		my $fopkind = uc $1;
-		my $fopby = $2;
-		translate($fopby);
-		if ( $fopkind eq 'LSL' ) {
+		my $fopby = translate($2);
+
+		# Rotational and shifting FOPs
+		if ( $fopkind eq 'LSL' ) { # Logical Left
 		    $offsetshift = -1;
 		    $offset = $fopby;
 		    #$_ = $_ << $fopby;
 		}
-		elsif ( $fopkind eq 'LSR' ) {
+		elsif ( $fopkind eq 'LSR' ) { #Logical Right
 		    $offsetshift = 1;
 		    $offset = $fopby;
 		    #$_ = $_ >> $fopby;
 		}
-		elsif ( $fopkind eq 'ASR' ) {
+		elsif ( $fopkind eq 'ASR' ) { # Arithmetic Right
 		    # $a & 0x80000000 to get high bit then shift then or
 		    $offsetshift = 2;
 		    $offset = $fopby;
 		}
-		elsif ( $fopkind eq 'ROR' ) {
+		elsif ( $fopkind eq 'ROR' ) { # Rotate Right
 		    $offsetshift = 3;
 		    $offset = $fopby;
 		}
@@ -621,32 +952,33 @@ sub translate {
 	    else { throw("Bad FOP - got through the parser but not the translator? $fop") }
 	}
 	print "TODO: R15 only contains PC. See http://www.heyrick.co.uk/assembler/psr.html\n" if $_ eq 'PC' or $_ eq 'R15';
-	if ( uc $_ eq 'PC' ) { $_ = $reg[15] }
-	elsif ( $_ =~ /^R(\d+)$/i ) { # Do this manually so we can Throw.
+
+	if ( uc $_ eq 'PC' ) { $_ = $reg[15] } # PC is R15
+	elsif ( $_ =~ /^R(\d+)$/i ) {
 	    throw("$_ is not in range 0-15") unless $1 >= 0 && $1<=15;
-	    $reg[$1]||=0;
+	    $reg[$1]||=0; # We have a value
 	    vprint "Translating $_ to $reg[$1]\n";
 
 	    if ( !$offset ) { $_ = $reg[$1] }
-	    elsif ( $offsetshift == 0 ) {
+	    elsif ( $offsetshift == 0 ) { # Offset of number or register
 		$_ = $reg[$1] + $offset;
 		vprint "   (plus FOP Offset $offset equals $_)\n";
 	    }
-	    elsif ( $offsetshift == -1 ) {
+	    elsif ( $offsetshift == -1 ) { # LSL
 		my $carrymask = 1 << (32-$offset);
 		$fopco = $reg[$1]&$carrymask ?1:0;
 
 		$_ = $reg[$1] << $offset;
 		vprint "   (But shifted left $offset equals $_)\n";
 	    }
-	    elsif ( $offsetshift == 1 ) {
+	    elsif ( $offsetshift == 1 ) { # LSR
 		my $carrymask = 1 << ($offset-1);
 		$fopco = $reg[$1]&$carrymask ?1:0;
 
 		$_ = $reg[$1] >> $offset;
 		vprint "   (But shifted right $offset equals $_)\n";
 	    }
-	    elsif ( $offsetshift == 2 ) {
+	    elsif ( $offsetshift == 2 ) { # ASR
 		my $carrymask = 1 << ($offset-1);
 		$fopco = $reg[$1]&$carrymask ?1:0;
 		my $highbit = $reg[$1] & 0x80000000;
@@ -657,7 +989,7 @@ sub translate {
 		}
 		vprint "   (But shifted right $offset and high-bitized equals $_)\n";
 	    }
-	    elsif ( $offsetshift == 3 ) {
+	    elsif ( $offsetshift == 3 ) { # ROR
 		my $carrymask = 1 << ($offset-1);
 		$fopco = $reg[$1]&$carrymask ?1:0;
 
@@ -673,21 +1005,23 @@ sub translate {
 	elsif ( $_ =~ /^(?:&|#0x)(-?[\dA-F]+)$/i ) { # Hex Numbers (?)
 	    $_ = hex($1);
 	}
-	elsif ( $_ =~ /^(=?)(\w+)$/i ) {
-	    #if ( $1 ) { vprint "NOT TRANSLATING =$2\n";return }
-	    if ( $1 ) {
+	elsif ( $_ =~ /^(=?)(\w+)$/i ) { # Addresses
+	    if ( $1 ) { # Get the address (=Label)
 		$_ = exists($labels{lc $2}) && $labels{lc $2}=~ /^(\d+)\|(\d+)$/?$1:$_;
 	    }
-	    else {
+	    else { # Memory
 		my $ol = $_;
-		$_ = exists($labels{lc $2}) && $labels{lc $2}=~ /^(\d+)\|(\d+)$/?getmem($labels{lc $2}[0],$labels{lc $2}[1]):$_;
+		$_ = exists($labels{lc $2}) # If the label exists
+		  && $labels{lc $2}=~ /^(\d+)\|(\d+)$/ # And is (was?) a DCx
+		    ?getmem($1,$2) # Load memory
+		      :$_; # Otherwise, if something isn't right, leave it.
 		vprint "Translating $ol to $_\n";
 	    }
 	}
-	if ( $_ =~ /^\d+$/ ) { $_+=0 }
+	if ( $_ =~ /^\d+$/ ) { $_+=0 } # Numberize numbers
 	# Let someone else deal with it.
     }
-    return @_;
+    return @args;
 }
 
 sub armsub {
@@ -786,4 +1120,11 @@ sub MungeString {
     $out =~ s/\,\s*$//g;
     vprint "  $out\n";
     return $out;
+}
+
+sub modreg {				# Do any special things that need to
+    my ($reg) = @_;			# be done when a register has been
+    if ( $reg == 15 ) {			# modified
+	$reg[15]+=4;
+    }
 }
