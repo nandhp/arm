@@ -38,7 +38,7 @@ print OUT "<H1>ARM Simulator Release Notes</H1>";
 my %instructions = ();
 my @inskinds = ();
 while (<ARM>) {
-    if ( m/\$VERSION\s*=\s*['"]?(\d+)['"]?\s*;/ ) {
+    if ( m/\$VERSION\s*=\s*['"]?(\d*\.?\d+)['"]?\s*;/ ) {
 	$version = $1;
     }
     elsif ( m/\%instructions\s*=\s*\(/ ) {
@@ -61,7 +61,7 @@ while (<ARM>) {
 }
 
 push @toc, "Instruction Summary",'+',@inskinds,'-',"What's New",'+',"Changes","Diff",'-', "Known Issues","Related Links";
-print OUT "<P>Version $version\n\n<H2>Contents</H2><P>\n";
+print OUT "<P>Version $version\n\n<H2>Contents</H2>\n";
 my @i = ();
 push @i, "1";
 print OUT "<TABLE CELLSPACING=0 CELLPADDING=0 BORDER=0>\n";
@@ -82,12 +82,12 @@ $i = 1;
 my $section = shift(@toc);
 my $anchor = md5_hex($section);
 
-print OUT "<P><A NAME=$anchor><H2>".$section."</H2></A><P>\n";
+print OUT "<H2><A NAME=\"$anchor\">".$section."</A></H2>\n";
 shift(@toc);
 foreach ( @inskinds ) {
     shift @toc;
     my $anchor = md5_hex($_);
-    print OUT "<A NAME=$anchor><H3>$_</H3></A>\n<UL>\n";
+    print OUT "<H3><A NAME=\"$anchor\">$_</A></H3>\n<UL>\n";
     foreach ( @{$instructions{$_}} ) {
 	print OUT "<LI>$_</LI>\n";
     }
@@ -99,16 +99,16 @@ shift(@toc);
 $section = shift(@toc);
 $anchor = md5_hex($section);
 
-print OUT "<P><A NAME=$anchor><H2>".$section."</H2></A><P>\n";
+print OUT "<H2><A NAME=\"$anchor\">".$section."</A></H2>\n";
 shift(@toc);
 
 # Changes
 $section = shift(@toc);
 $anchor = md5_hex($section);
 
-print OUT "<P><A NAME=$anchor><H3>".$section."</H3></A><P>\n";
+print OUT "<H3><A NAME=\"$anchor\">".$section."</A></H3>\n";
 
-print OUT "<P><UL>\n";
+print OUT "<UL>\n";
 open CHANGELOG, "ChangeLog" or die "Can't open ChangeLog: $!\n";
 while (<CHANGELOG>) { last if m/^($version|LATEST)\s*$/ }
 while (<CHANGELOG>) { next if m/^\s*$/;last if m/^\w/;m/^\s+(-?)\s+(.+?)[\r\n]+$/; print OUT ($1?'<LI>':'')."$2\n" if $2 }
@@ -119,7 +119,7 @@ close CHANGELOG;
 $section = shift(@toc);
 $anchor = md5_hex($section);
 
-print OUT "<P><A NAME=$anchor><H3>".$section."</H3></A><P>\n";
+print OUT "<H3><A NAME=\"$anchor\">".$section."</A></H3>\n";
 opendir(DIR, "rel");
 my @out = readdir DIR;
 @out=sort @out;
@@ -147,8 +147,8 @@ else {
 	print OUT $_;
 	last if m/\<\/table\>/i;
     }
-    <DIFF>;
-    print OUT <DIFF>;
+    my $str = <DIFF>;
+    print OUT $str;#<DIFF>;
 }
 
 shift(@toc);
@@ -156,17 +156,65 @@ shift(@toc);
 $section = shift(@toc);
 $anchor = md5_hex($section);
 
-print OUT "<P><A NAME=$anchor><H2>".$section."</H2></A><P>\n";
+print OUT "<H2><A NAME=\"$anchor\">".$section."</A></H2>\n";
 print OUT "<P>None.\n";
 
 # Resources
 $section = shift(@toc);
 $anchor = md5_hex($section);
 
-print OUT "<P><A NAME=$anchor><H2>".$section."</H2></A><P>\n";
+print OUT "<H2><A NAME=\"$anchor\">".$section."</A></H2>\n";
 print OUT <<END;
 <UL>
-<LI><A HREF="http://nand.homelinux.com:8888/~nand/blosxom/blosxom.cgi">ARM Status Blog</A></LI>
+<LI><A HREF="http://nand.homelinux.com:8888/~nand/blosxom/">ARM Status Blog</A></LI>
 </UL>
+
+<!--
+<rdf:RDF xmlns="http://web.resource.org/cc/"
+    xmlns:dc="http://purl.org/dc/elements/1.1/"
+    xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+<Work rdf:about="">
+   <license rdf:resource="http://creativecommons.org/licenses/GPL/2.0/" />
+   <dc:type rdf:resource="http://purl.org/dc/dcmitype/Software" />
+</Work>
+
+<License rdf:about="http://creativecommons.org/licenses/GPL/2.0/">
+   <permits rdf:resource="http://web.resource.org/cc/Reproduction" />
+   <permits rdf:resource="http://web.resource.org/cc/Distribution" />
+   <requires rdf:resource="http://web.resource.org/cc/Notice" />
+   <permits rdf:resource="http://web.resource.org/cc/DerivativeWorks" />
+   <requires rdf:resource="http://web.resource.org/cc/ShareAlike" />
+   <requires rdf:resource="http://web.resource.org/cc/SourceCode" />
+</License>
+
+</rdf:RDF>
+-->
+
 END
 print OUT "</BODY></HTML>";
+close OUT;
+system 'pod2html arm.pl > documentation.html_';
+open DOCIN, "documentation.html_";
+open DOCOUT, ">documentation.html";
+while (<DOCIN>) {
+    last if m/^<!-- INDEX BEGIN -->/i;
+    print DOCOUT $_;
+}
+my @index = ();
+while (<DOCIN>) {
+    last if m/^<!-- INDEX END -->/i;
+    push @index, $_;
+}
+
+while (<DOCIN>) { last if m/^<HR \/>/i }
+while (<DOCIN>) {
+    print DOCOUT $_;
+    last if m/^<HR \/>/i;
+}
+print DOCOUT @index;
+print DOCOUT '<HR />';
+while (<DOCIN>) { print DOCOUT $_ }
+close DOCIN;
+close DOCOUT;
+unlink 'documentation.html_';
+unlink <pod2htm?.tmp>

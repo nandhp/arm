@@ -1,0 +1,4 @@
+	MOV R0, #5
+	MOV R1, #9
+	ADD R0, R0, R1
+	OUT R0

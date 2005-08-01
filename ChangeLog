@@ -1,3 +1,23 @@
+20050801
+	- Created a new, improved website and wrote ARM Simulator Update,
+	  an automatic-update utility written in Perl/Tk.
+	- Removed obsolete function translate().
+	- Properly implement conditions HI (1000) and LS (1001).
+	- Rewrite most of the code to seperate into (1) compilation,
+	  (2) disassembly and (3) execution.
+	- Broke ARM Debugger, because the assembled machine code has
+	  no link to the original .s files. A debugging information
+	  format will be devised for the next release.
+	- LDR and STR support should be roughly equal to the last version,
+	  despite parsing support for pre- and post- indexing. It is
+	  suggested (although not required) that you use the new ADR
+	  instruction instead of LDR=.
+	- All parsing should be roughly compliant.
+	- Added -o, -a, -D and -x options to allow access to new features.
+	  Read the documentation.
+	- Added Licensing information. Made release notes vaugely valid HTML.
+	  Mildly improved throw() and isreg(). Fixed byte-ordering.
+
 20050602
 	- arm.pl now uses 4 byte instructions and to store
 	  instructions in memory. There may be bugs.

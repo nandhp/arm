@@ -1,9 +1,11 @@
 #!/usr/bin/env ./arm.pl
 	LDR R1, Value1
+	OUTS R1
 	LDR R2, Value2
-	ADD R1, R1, R2
-	STR R1, Result
-	OUT R1
+	OUTS R2
+	ADD R3, R1, R2
+	STR R3, Result
+	OUTS R3
 	END
 
 Value1:	DCD &37E3C123

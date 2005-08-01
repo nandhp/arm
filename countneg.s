@@ -25,7 +25,7 @@ Done:
 Data1:	DCD	&F0000012
 	DCD	&00000159
 	DCD     &F0000197
-TablEnd: DCD	0
-Length:	DCW	3 ;(TablEnd - Table) / 4	;because we're having to align
+TablEnd: DCD	#0
+Length:	DCW	#3 ;(TablEnd - Table) / 4	;because we're having to align
 ;	ALIGN				;gives the loop count
-Result:	DCW	0			;storage for result
+Result:	DCW	#0			;storage for result
