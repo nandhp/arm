@@ -1,7 +1,8 @@
 #!/usr/bin/env ./arm.pl
 ; Count the number of times character CHAR appears in string DATA
-	LDR	R0, =Data	; Address of string
+	ADR	R0, Data	; Address of string
 	LDRB	R1, Char	; Character to count up (C)
+	OUTB R1
 	MOV	R2, #0		; Current char
 	MOV	R3, #0		; Index in string
 	MOV	R4, #0		; Count of C
@@ -18,4 +19,8 @@ Done:	OUT	R4
 	END
 	
 Data:	DCB	"Hello", 0
-Char:	DCB	"H"
+
+Char:	DCB	"l"
+	
+
+

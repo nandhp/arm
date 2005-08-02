@@ -1,3 +1,7 @@
+20050802
+	- Fixed some memory bugs
+	- ARM Simulator Update works on Windows systems without Win32::API
+
 20050801
 	- Created a new, improved website and wrote ARM Simulator Update,
 	  an automatic-update utility written in Perl/Tk.

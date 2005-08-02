@@ -22,8 +22,7 @@ my $win32 = 0;
 my $ShellExecute;
 if ( $^O eq 'MSWin32' ) {
     $win32 = 1;
-    eval 'use Win32::API';
-    $ShellExecute = Win32::API->new("shell32","ShellExecute", "NPPPPI", "N");
+    eval 'use Win32::API;$ShellExecute = Win32::API->new("shell32","ShellExecute", "NPPPPI", "N");';
 }
 
 my $imgdata = '';

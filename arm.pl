@@ -13,7 +13,7 @@ use Getopt::Long qw(:config gnu_getopt);
 use Pod::Usage;
 use Term::ReadLine;
 
-my $VERSION='20050801';# yyyymmdd
+my $VERSION='20050802';# yyyymmdd
 
 $| = 1;
 
@@ -868,7 +868,7 @@ while ( $reg[15]<=length($memory)+4 ) {	# Plus Eight. Sigh.
 
     my %instruction = %{parse_instruction($binary)};
 
-    if ( $mode == 2 ) {
+    if ( $mode == 2 and ( $v < 0 or $o ) ) {
 	print DIO "\t",disassemble_instruction(\%instruction),"\n";
     }
     if ( $v >= 0 ) {
@@ -1702,16 +1702,16 @@ sub logicalsflags {
 sub getmem {
     my ($index,$byteonly) = @_;
     $memory .= chr(0)x($index-length($memory)+8)
-      if length($memory)-$index < 0;
-    if ($byteonly ) { return ord(substr($memory,$index,1)) }
+      if length($memory) < $index+4;
+    if ( $byteonly ) { return ord(substr($memory,$index,1)) }
     else { return unpack('V',substr($memory,$index,4)) } # See $memory comment
 }
 
 sub setmem {
     my ($index,$content,$byteonly) = @_;
-    $memory .= chr(0)x($index-length($memory)+4+8)
-      if length($memory)-$index < 0;
-    if ($byteonly ) { return substr($memory,$index,1,chr($content)) }
+    $memory .= chr(0)x($index-length($memory)+8)
+      if length($memory) < $index+4;
+    if ( $byteonly ) { return substr($memory,$index,1,chr($content)) }
     else { return substr($memory,$index,4,pack('V',$content)) }
 }
 
