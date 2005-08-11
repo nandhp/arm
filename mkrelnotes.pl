@@ -32,6 +32,7 @@ END
 
 my @toc = ();
 my $version = 'Unknown';
+my $codename = '';
 
 open ARM, "arm.pl" or die "Opening arm.pl: $!";
 print OUT "<H1>ARM Simulator Release Notes</H1>";
@@ -40,6 +41,10 @@ my @inskinds = ();
 while (<ARM>) {
     if ( m/\$VERSION\s*=\s*['"]?(\d*\.?\d+)['"]?\s*;/ ) {
 	$version = $1;
+	my $wcn = <ARM>;
+	if ( $wcn =~ /^#\s*"(.+?)"\s*$/ ) {
+	    $codename = $1;
+	}
     }
     elsif ( m/\%instructions\s*=\s*\(/ ) {
 	my $kind = '';
@@ -61,7 +66,9 @@ while (<ARM>) {
 }
 
 push @toc, "Instruction Summary",'+',@inskinds,'-',"What's New",'+',"Changes","Diff",'-', "Known Issues","Related Links";
-print OUT "<P>Version $version\n\n<H2>Contents</H2>\n";
+print OUT "<P>Version $version";
+#print OUT " \"$codename\"" if $codename;
+print OUT "\n\n<H2>Contents</H2>\n";
 my @i = ();
 push @i, "1";
 print OUT "<TABLE CELLSPACING=0 CELLPADDING=0 BORDER=0>\n";
@@ -167,6 +174,7 @@ print OUT "<H2><A NAME=\"$anchor\">".$section."</A></H2>\n";
 print OUT <<END;
 <UL>
 <LI><A HREF="http://nand.homelinux.com:8888/~nand/blosxom/">ARM Status Blog</A></LI>
+<LI><A HREF="documentation.html">ARM Simulator Documentation</A></LI>
 </UL>
 
 <!--

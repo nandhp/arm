@@ -13,7 +13,7 @@ use Getopt::Long qw(:config gnu_getopt);
 use Pod::Usage;
 use Term::ReadLine;
 
-my $VERSION='20050802';# yyyymmdd
+my $VERSION='20050811'; # yyyymmdd
 
 $| = 1;
 
@@ -28,12 +28,6 @@ my ($mode,$mode_a,$mode_d,$mode_x) = (0,0,0,0);
 GetOptions('debug|d' => \$d, 'verbose|v' => \$v, 'quiet|q' => \$q, 'output|o=s' => \$o, 'help|h|?' => \$help, 'assemble|a' => \$mode_a, 'disassemble|D' => \$mode_d, 'execute|x' => \$mode_x, 'man' => \$man, 'version' => \&show_version) or show_help();
 show_help(1) if $help;
 show_help(2) if $man;
-
-my $term = new Term::ReadLine 'ARM Debugger';
-my $prompt = '<DB> ';
-my $OUT = \*STDOUT;
-my $debugnext = 1; # Stop at next statement
-my $defaultc = 0;
 
 if ( !$mode_a && !$mode_d && !$mode_x ) {
     if ( scalar(@ARGV) != 1 ) {		# Assume anything but one parameter
@@ -69,25 +63,13 @@ elsif ( $mode_x ) {
 else {
 }
 
-if ( $d && $mode == 3 ) {
-    #$q=0;
-    print "\narm.pl debugger, version $VERSION\n\nTry 'perldoc arm.pl' for help\n\n";
-    $OUT = $term->OUT if $term->OUT;
-#    print "Spawning debugger...\n";
-#    my @args = (
-#		$v?('-'.('v'x$v)):'',
-#		$q?'-q':'',
-#	       );
-#    system('perl','-d','arm.pl',
-#	   @args,
-#	   @ARGV);
-#    exit();
-
-    die "The dubugger is currently broken" if $d;
+if ( $d && $mode == 1 ) {
+    print "Assembling with debug information...\n";
+}
+elsif ( $d && $mode == 3 || $mode == 2 ) {
 }
 elsif ( $d ) {
     show_help(1,"Option --debug is only available during execution.\n");
-    #print "Assembling with debug information...\n";
 }
 
 $v = -1 if $q;
@@ -120,8 +102,10 @@ assembler code. If not given, defaults to STDOUT.
 
 =item B<--debug>, B<-d>
 
-Run the provided assembler code under the debugger. The debugger is
-currently broken.
+In execution mode, execute with the ARM Debugger. In assembly mode,
+assemble with debugging information. In disassembly and execution
+modes, having a binary compiled with debugging information will
+provide much more helpful output.
 
 =item B<--quiet>, B<-q>
 
@@ -190,23 +174,22 @@ available in the debugger:
 
 =over 8
 
-=item B<b>[ [I<filename>:]I<line>]
+=item B<b>[ I<address or label>]
 
-Set a breakpoint. If no filename is specified, defaults to the current
-file, and if no line number is specified, defaults to the current line.
+Set a breakpoint.
 
-=item B<d>[ [I<filename>:]I<line>]
+=item B<d>[ I<address or label>]
 
 Clear a previously-set breakpoint. See B<b>.
 
-=item B<l>[ [I<filename>][:][I<line>]]
+=item B<l>[ I<address or label>]
 
 List the next ten lines of I<filename>, starting at I<line> or
 defaulting to various sensible defaults which involve you being able
 to enter B<l> repeatedly to view more of the file, like the perl
 debugger.
 
-=item B<v>[ [I<filename>][:][I<line>]]
+=item B<v>[ I<address or label>]
 
 Same as B<l>, except the first window it displays will also show
 several lines prior to the specified (or default) line.
@@ -525,11 +508,11 @@ while (my $line = <>) {
 	# that is not preceeded by a backslash.
 	$vals =~ s/\"(.+?)(?<!\\)\"/MungeString($1)/ge;
 	if ( $bdw eq 'B' ) {
-	    $labels{$lastlabel}="$mempos|1";
+	    $labels{$lastlabel}=$mempos if $lastlabel;
 	    foreach ( split ',', $vals ) {
 		s/^\s*|\s*$//g;
 		setmem($mempos,isimmed($_)||0,1);
-		vprint "$_ stored at $mempos (size 1) label $lastlabel=$labels{$lastlabel}\n";
+		vprint "$_ stored at $mempos (size 1)".($lastlabel?" label $lastlabel=$labels{$lastlabel}":'')."\n";
 		push @mempos, -1;
 		$mempos++;
 	    }
@@ -539,11 +522,11 @@ while (my $line = <>) {
 		setmem($mempos,0,1);
 		$mempos++;
 	    }
-	    $labels{$lastlabel}="$mempos|0";
+	    $labels{$lastlabel}=$mempos if $lastlabel;
 	    foreach ( split ',', $vals ) {
 		s/^\s*|\s*$//g;
 		setmem($mempos,isimmed($_)||0,0);
-		vprint "$_ stored at $mempos (size 4) label $lastlabel=$labels{$lastlabel}\n";
+		vprint "$_ stored at $mempos (size 4)".($lastlabel?" label $lastlabel=$labels{$lastlabel}":'')."\n";
 		push @mempos, -4;
 		$mempos+=4;
 	    }
@@ -607,6 +590,8 @@ if ( $o ) {
 }
 my $newmem = '';
 
+my @memdbg = ();
+
 my $skip_to_mempos = -1;
 foreach my $item ( @mempos ) {
     last unless defined($item);
@@ -617,6 +602,7 @@ foreach my $item ( @mempos ) {
     $mps .= ' 'x(4-length($mps));
 
     if ( $item =~ /^(-\d+)$/ ) { # DCx needs to be dumped too!
+	push @memdbg, $mempos if $d;
 	if ( $item eq '-4' ) {
 	    my $tmp = getmem($mempos,0)||0;#,pack('V',$tmp);
 	    printf "%s %032b   %08X  DATA  4 BYTES\n",$mps,$tmp,$tmp
@@ -666,8 +652,8 @@ foreach my $item ( @mempos ) {
 	$ins[2] = '';
 	$ins[4] = 'R15';
 	if ( exists($labels{lc $1}) ) {
-	     $labels{lc $1} =~ /^(\d+)\|(\d+)$/;
-	     $ins[5] = '#'.($1-$mempos-8);
+#	     $labels{lc $1} =~ /^(\d+)\|(\d+)$/;
+	     $ins[5] = '#'.($labels{lc $1}-$mempos-8);
 	}
 	else {
 	    throw("Invalid LDR=label");
@@ -726,8 +712,7 @@ foreach my $item ( @mempos ) {
     elsif ( $opcode eq '-2' ) { # LDR and STR
 	my @operand;
 	if ( exists($labels{lc $ins[4]}) ) {
-	    $labels{lc $ins[4]} =~ /^(\d+)/;
-	    @operand = parse_operand2('[R15, #'.($1-$mempos-8).']');
+	    @operand = parse_operand2('[R15, #'.($labels{lc $ins[4]}-$mempos-8).']');
 	}
 	else {
 	    @operand = parse_operand2($ins[4]);
@@ -805,6 +790,35 @@ foreach my $item ( @mempos ) {
     $mempos+=4;
     $progi++;
 }
+if ( $d ) {
+    print "Producing debugging information...\n" if $v >= 0;
+    my $debugdata = "$VERSION|";
+    my @dbgtemp = ();
+
+    # Dump labels
+    vprint "    labels...";
+    foreach (keys %labels) {		# Dump labels
+	vprint '.';
+	push @dbgtemp, "$_;$labels{$_}";
+    }
+    $debugdata .= join(';',@dbgtemp).'|';
+    vprint "done.\n";
+
+    # Dump DCx positions
+    vprint "    DCx...";
+    $debugdata .= join(';',@memdbg);
+    vprint "done.\n";
+
+    $debugdata .= '|' while length($debugdata)%4; # ALIGN
+
+    my $dbglen = length($debugdata);
+    $debugdata .= '|DBG'.pack('V',$dbglen);
+
+    print $OUTPUT $debugdata if $OUTPUT;
+    $newmem .= $debugdata if $mode_x;
+    printf("Produced %d bytes.\n",$dbglen);
+}
+
 if ( $OUTPUT ) {
     # chmod +x ...no seriously.
     my $x=sprintf("%o", (stat $o)[2]);
@@ -814,6 +828,7 @@ if ( $OUTPUT ) {
 
 }
 elsif ( $mode_x ) {
+    $mode = 3;
     $memory = $newmem;
     undef $newmem;
     vprint "\n\n\n";
@@ -833,6 +848,46 @@ foreach ( @ARGV ) {
 }
 
 execute:
+
+my $term = new Term::ReadLine 'ARM Debugger';
+my $prompt = '<DB> ';
+my $OUT = \*STDOUT;
+my $debugnext = 1; # Stop at next instruction
+my $defaultc = 0;
+
+my @rlabels = ();
+my %mempos = ();
+my $dbgstart = -1;
+
+if ( $d ) {
+    if ( $mode == 3 ) {
+	$q = 0;
+	$v = 0;
+	print "\narm.pl debugger, version $VERSION\n\n";
+	print "Try 'perldoc arm.pl' for help\n\n";
+    }
+    print "Searching for debugging information..." if $mode == 3 || $v >= 0;
+    if ( substr($memory,length($memory)-8,4) ne '|DBG' ) {
+	print "not found.\n" if $mode == 3 || $v >= 0;
+    }
+    else {
+	my $dbglen = getmem(length($memory)-4,0);
+	$dbgstart = length($memory)-8-$dbglen;
+	my @debug = split('\|',substr($memory,$dbgstart));
+	if ( $debug[0] == $VERSION ) {
+	    print "loaded $dbglen bytes..." if $mode == 3 || $v >= 0;
+	    %labels = split(';',$debug[1]);
+	    $rlabels[$labels{$_}] = $_ foreach keys %labels;
+	    $mempos{$_} = 1 foreach split(';',$debug[2]);
+	    print "done.\n" if $mode == 3 || $v >= 0;
+	}
+	else {
+	    print "incompatible version $debug[0].\n" if $mode == 3 || $v >= 0;
+	}
+    }
+    print "\n" if $mode == 3 || $v >= 0;
+    $OUT = $term->OUT if $term->OUT;
+}
 
 # Run it
 my ($N,$Z,$C,$V) = (0,0,0,0);
@@ -863,20 +918,9 @@ my $died = 0;
 
 INSTRUCTION:
 while ( $reg[15]<=length($memory)+4 ) {	# Plus Eight. Sigh.
-    my $instruction = getmem($rmeight = $reg[15]-8,0);
-    my $binary = dec2bin($instruction,32);
-
-    my %instruction = %{parse_instruction($binary)};
-
-    if ( $mode == 2 and ( $v < 0 or $o ) ) {
-	print DIO "\t",disassemble_instruction(\%instruction),"\n";
-    }
-    if ( $v >= 0 ) {
-	my $mps = sprintf '%d', $reg[15]-8;
-	$mps .= ' 'x(4-length($mps));
-	print $mps," $binary   ",bin2hex($binary);
-	print "  ",disassemble_instruction(\%instruction),"\n";
-    }
+    my $rl = $rlabels[$reg[15]-8];
+    print "$rl:\n" if $rl && $mode == 2;
+    my %instruction = %{get_instruction($reg[15]-8,1,1)};
 
     ($reg[15] += 4, next) if $mode == 2;
 
@@ -885,29 +929,11 @@ while ( $reg[15]<=length($memory)+4 ) {	# Plus Eight. Sigh.
     my $oldpc = $reg[15]; # Save old PC so if it changes we don't increment
 
 
+    # ARM Debugger
+    if ( $d ) {
+	$debugnext = 1 if $breaks[$reg[15]-8];
 
-    my @ins; my $line;
-
-###########################################################################
-if ( 0 ) { # ARM Debugger #################################################
-    my $line = 1?'unknown:'.$unknownid:'phantom instruction';
-    if ( !defined($lines[$rmeight/4]) ) {
-	print "WARN: Unknown source for instruction at memory location $reg[15]-8=$rmeight\n";
-	#throw("Bad PC: $reg[15]");
-	$lines[$rmeight/4] = $line;
-	$unknownid++;
-    }
-    else { $line = $lines[$rmeight/4] }
-
-    if ( $breaks[$rmeight/4]||0 ) {
-	$debugnext = 1;
-	$lineflags .= 'b';
-    }
-
-    print("$line:".($lineflags||'')."\t".join(' ',@ins[0..2]).' '.join(', ',@ins[3..$#ins])."\n") if ($v > -1 or $debugnext) and !$died;
-
-    if ( $d ) { #Debugger
-	my ($readfile,$listline,$startline) = ('',0,0);
+	my ($listline) = (0);
 	my $debugline;
 	print "$died\nUse 'q' to quit the debugger.\n\n" if $died;
 	while ( $debugnext && (defined($debugline = $term->readline($prompt))||(print("\n\n"),exit(1))) ) {
@@ -931,89 +957,68 @@ if ( 0 ) { # ARM Debugger #################################################
 		    print "R$2 = $reg[$2]\n";
 		}
 	    }
-	    elsif ( lc $debugline =~ /^([bd])( ([^\s:]*?):?(\d+))?$/ ) {
+	    elsif ( lc $debugline =~ /^([bd])( (\d+|\w+))?$/ ) {
 		my $sr = $1 eq 'b'?1:0;
-		if ( !$2 ) {
-		    $breaks[$rmeight/4]=$sr;
-		    redo INSTRUCTION;
-		}
-		else {
-		    my ($file,$linenum) = ($3,$4);
-		    ($file) = $lines[$rmeight/4] =~ /^(.+):\d+$/ unless $file;
-		    $file = $ARGV unless $file;
+		my $item = $3||($reg[15]-8);
+		if ( $item !~ /^\d+$/ ) { $item = $labels{lc $3} }
+		(print("Must be on word boundry\n"),next) if $item % 4;
 
-		    my $destindex = 0;
-		    my $found = 0;
-		    my $bcmp = $includefn?"$file:$linenum":$linenum;
-		    foreach ( @lines ) {
-			if ( $_ eq $bcmp ) {
-			    $breaks[$destindex]=$sr;
-			    $found = 1;
-			    last;
-			}
-			$destindex++;
-		    }
-		    if ( !$found ) {
-			print "Can't set breakpoint at $file:$linenum\n";
+		$breaks[$item] = $sr;
+		redo INSTRUCTION;
+
+		if ( 0 ) {		#[^\s:]*?):?(\d+))?
+		    if ( !$2 ) {
+			$breaks[$rmeight/4]=$sr;
+			redo INSTRUCTION;
 		    }
 		    else {
-			redo INSTRUCTION;
+			my ($file,$linenum) = ($3,$4);
+			($file) = $lines[$rmeight/4] =~ /^(.+):\d+$/
+			  unless $file;
+			$file = $ARGV unless $file;
+
+			my $destindex = 0;
+			my $found = 0;
+			my $bcmp = $includefn?"$file:$linenum":$linenum;
+			foreach ( @lines ) {
+			    if ( $_ eq $bcmp ) {
+				$breaks[$destindex]=$sr;
+				$found = 1;
+				last;
+			    }
+			    $destindex++;
+			}
+			if ( !$found ) {
+			    print "Can't set breakpoint at $file:$linenum\n";
+			}
+			else {
+			    redo INSTRUCTION;
+			}
 		    }
 		}
 	    }
-	    elsif ( lc $debugline =~ /^([vl])( ([^\s:]*?):?(\d+)?)?$/i ) {
+	    elsif ( lc $debugline =~ /^([vl])( (\d+|\w+))?$/i ) {
 		my $view = lc $1 eq 'v'?1:0;
 
-		if ( $3 || $4 || !$readfile || !$listline || !$startline ) {
-		    ($readfile,$listline) = ($3,$4);
-		    ($readfile) = $lines[$rmeight/4] =~ /^(.+):\d+$/
-		      unless $readfile;
-		    $readfile = $ARGV unless $readfile;
+		my $tmp = $2 ? $3 : $reg[15]-8;
+		my $start = ( (!$2 && $listline)
+			      ? $listline
+			      : ( $view ? $tmp-8 : $tmp ));
+		if ( $start !~ /^\d+$/ ) { $start = $labels{$start} }
 
-		    if ( $3 ) { $listline = 1 }
-		    else {
-			($listline) = $lines[$rmeight/4] =~ /^.+:(\d+)$/
-			  unless $listline;
-			$listline = $lines[$rmeight/4] unless $listline;
-			$startline = $view?$listline-4:$listline;
-		    }
-		}
+		$start = 0 if $start < 0;
+		my $end = $start + ($2 ? 0 : 40);
+		$end = length($memory)-4 if $end >= length($memory);
+		$start = length($memory)-4 if $start >= length($memory);
 
-		open SCRIPT, $readfile;
-		my $readline = 1;
-		until ( $readline >= $startline ) {
-		    $readline++;
-		    <SCRIPT>;
+		(print("Must be on word boundry\n"),next) if $start % 4;
+
+		foreach ( my $vadr = $start;$vadr <= $end;$vadr += 4 ) {
+		    print "$rlabels[$vadr]:\n" if $rlabels[$vadr];
+		    get_instruction($vadr,0,1);
+		    $listline = $vadr;
 		}
-		while ( my $linetxt = <SCRIPT> ) {
-		    my $bcmp = $includefn?"$readfile:$readline":$readline;
-		    my $found = -1;
-		    my $destindex = 0;
-		    foreach ( @lines ) {
-			next unless defined($_);
-			if ( $_ eq $bcmp ) {
-			    $found = $destindex;
-			    last;
-			}
-			$destindex++;
-		    }
-		    if ( $found < 0 ) {
-			print "$bcmp\t$linetxt";
-		    }
-		    else {
-			my $lineflags = '';
-			$lineflags .= 'b' if $breaks[$destindex]||0;
-			$lineflags .= '>>' if $bcmp eq $line;
-			$lineflags .= ' ';
-			print("$bcmp:".($lineflags||'')."\t$linetxt");
-		    }
-		    $readline++;
-		    last if $readline>$startline+9;
-		}
-		$startline = $readline;
-		if ( eof(SCRIPT) ) {
-		    $startline--;
-		}
+		$listline+=4;
 	    }
 	    elsif ( lc $debugline =~ /^c$/ or ($debugline eq '' and $defaultc)) {
 		if ( $died ) { print "Not running\n";next }
@@ -1029,13 +1034,11 @@ if ( 0 ) { # ARM Debugger #################################################
 	    }
 	    else { print "Unrecognized command\n" }
 	}
-	close SCRIPT;
     }
     exit(1) if $died;
-} #########################################################################
-###########################################################################
 
-    my $cond = armbits($binary,31,4); # Offset 31-0 like in comments, Length
+
+    my $cond = $conds{$instruction{cond}};
 
     # Check conditional
     if ( $cond eq '1110' ) { }
@@ -1189,7 +1192,12 @@ if ( 0 ) { # ARM Debugger #################################################
 	}
 	elsif ( $instruction{opcode} eq 'END' ) { last }
 	elsif ( $instruction{opcode} eq 'DIE' ) {
-	    throw("Died on instruction $reg[15]")
+	    if ( $d ) {
+		$debugnext = 1;
+		$died = "Died on instruction ".($reg[15]-8);
+		redo INSTRUCTION;
+	    }
+	    throw('Died on instruction '.($reg[15]-8))
 	}
 	else {
 	    throw("Undefined instruction of type $instruction{kind}");
@@ -1228,8 +1236,9 @@ else {
 }
 
 sub parse_instruction {
-    my ($binary) = @_;
+    my ($binary,$check_validity) = @_;
 
+    # Offset 31-0 like in comments, Length
     my $kind = armbits($binary,27,3); # 00=DataProcess, 101=Branch,
                                       # 01=Ld/St, 011 = local
     # 000 DPI
@@ -1334,7 +1343,8 @@ sub parse_instruction {
 		$instruction{offset} = bin2dec(armbits($binary,3,4));
 		$instruction{offsetimmed} = 0;
 		if ( bin2dec(armbits($binary,11,8)) ) { # Scaled Register
-		    throw("Scaled register offset is not supported");
+		    throw("Scaled register offset is not supported")
+		      if $check_validity;
 		}
 	    }
 
@@ -1342,12 +1352,14 @@ sub parse_instruction {
 	    my $P = armbits($binary,24,1)?1:0;
 	    my $W = armbits($binary,21,1)?1:0;
 	    if ( $W && !$P ) {
-		throw("LDR/STR T mode is not supported")
+		throw("LDR/STR T mode is not supported") if $check_validity
 	    }
 	    elsif ( $W && $P ) {
 		throw("Pre-indexed addressing is not supported")
+		  if $check_validity
 	    }
-	    elsif ( !$P ) { throw("Post-indexed addressing is not supported") }
+	    elsif ( !$P ) { throw("Post-indexed addressing is not supported")
+			if $check_validity}
 	    elsif ( $P && !$W ) { }
 	}
     }
@@ -1357,7 +1369,7 @@ sub parse_instruction {
 	$instruction{swi} = $swi;
 	#printf "SWI &%06X\n",$swi;
     }
-    elsif ( $mode == 2 ) {
+    elsif ( !$check_validity ) {
 	$instruction{kind} = 'CONSTANT';
 	$instruction{immediate} = bin2dec($binary);
     }
@@ -1370,10 +1382,18 @@ sub parse_instruction {
 
 sub disassemble_instruction {
     my %instruction = %{shift @_};
+    my ($mempos) = @_;
+
     my $cond = $instruction{cond};
     $cond = '' if $cond eq 'AL';
 
-    if ( $instruction{kind} eq 'SWI' ) {
+    if ( $d && $dbgstart > -1 && $mempos >= $dbgstart ) {
+	return '[DEBUG INFO]';
+    }
+    elsif ( $instruction{kind} eq 'CONSTANT' or $mempos{$mempos} ) {
+	return 'DCW #'.bin2hex($instruction{binary});
+    }
+    elsif ( $instruction{kind} eq 'SWI' ) {
 	 return sprintf('SWI%s &%06X',$cond,$instruction{swi});
     }
     elsif ( $instruction{kind} eq 'DPI' ) {
@@ -1416,11 +1436,13 @@ sub disassemble_instruction {
 	}
 	return $ins;
     }
-    elsif ( $instruction{kind} eq 'B' ) { # TODO
+    elsif ( $instruction{kind} eq 'B' ) { # # TODO
 	my $ins = 'B';
 	$ins .= 'L' if $instruction{link};
 	$ins .= "$cond ";
-	$ins .= $reg[15]+$instruction{immediate};
+	my $baddr = $mempos+$instruction{immediate};
+	$ins .= $rlabels[$baddr+8]||$baddr;
+	return $ins;
     }
     elsif ( $instruction{kind} eq 'ARMPL' && $instruction{opcode} eq 'OUT' ) {
 	my $ins = 'OUT';
@@ -1450,13 +1472,38 @@ sub disassemble_instruction {
 	      : (($instruction{positive}?'':'-')."R$instruction{offset}");
 	    $ins .= ']';
 	}
+	return $ins;
     }
-    elsif ( $instruction{kind} eq 'CONSTANT' ) {
-	return 'DCW #'.$instruction{immediate};
+
+    return "UNKNOWN";
+}
+
+sub get_instruction {
+    my ($addr,$check_validity,$print_out) = @_;
+    $check_validity = 0 if $addr >= $dbgstart;
+
+    my $instruction = getmem($addr,0);
+    my $binary = dec2bin($instruction,32);
+
+    my %instruction = %{parse_instruction($binary,$check_validity)};
+
+    if ( $print_out ) {
+	if ( $mode == 2 and ( $v < 0 or $o ) and $check_validity ) {
+	    print DIO "\t",disassemble_instruction(\%instruction,$addr),"\n";
+	}
+	if ( $v >= 0 ) {
+	    my $flags = ($breaks[$addr]?'b':' ').($reg[15]-8 == $addr?'>':' ');
+	    $flags = '>>' if $flags eq ' >';
+	    $flags = '' if !$d || $mode == 2;
+	    $flags = '  ' if $d and !$debugnext and $flags eq '>>';
+
+	    my $mps = sprintf '%d', $addr;
+	    $mps .= ' 'x(4-length($mps));
+	    print $mps," $flags$binary   ",bin2hex($binary);
+	    print "  ",disassemble_instruction(\%instruction,$addr),"\n";
+	}
     }
-    else {
-	return "UNKNOWN";
-    }
+    return \%instruction;
 }
 
 sub offset_to_str {

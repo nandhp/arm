@@ -1,3 +1,8 @@
+LATEST
+	- ARM Debugger fixed, improved disassembler to take advantage of
+	  debugging information
+	- Removed needless mucking about with |s, %labels and $lastlabel.
+
 20050802
 	- Fixed some memory bugs
 	- ARM Simulator Update works on Windows systems without Win32::API
