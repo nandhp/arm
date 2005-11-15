@@ -1,4 +1,18 @@
-LATEST
+20051115
+	- Debugging Information Format now supports compressed debugging
+	  information ("ZBG", default), or the old uncompressed "DBG" format.
+	- Debugging Information now includes line numbers, not currently
+	  used in debugger.
+	- Added --no-zlib (Refuse to read or write "ZBG" DIF) and
+	  --dump-debuginfo (Decompress/Dump DIF) options.
+	- Fixed some bugs with use of shorthand LR=R14 and implemented
+	  shorthands SP=R13, IP=R12, FP=R11, SL=R10.
+	- Added support for LDM/STM.
+	- The assembler now allows labels that are not designated with a :,
+	  all instructions must now be indented.
+	- Fixed LDR/PC bug
+
+20050811
 	- ARM Debugger fixed, improved disassembler to take advantage of
 	  debugging information
 	- Removed needless mucking about with |s, %labels and $lastlabel.
