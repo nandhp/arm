@@ -7,7 +7,8 @@ Main:
 	LDR	R3, [R0]		; Load upper part of value2
 	LDR	R4, [R0, #4]		; Load lower part of value2
 	ADDS	R6, R2, R4		; Add lower 4 bytes and set carry flag
-	ADC	R5, R1, R3		; Add upper 4 bytes including carry	
+	ADC	R5, R1, R3		; Add upper 4 bytes including carry
+
 	LDR	R0, =Result		; Pointer to Result
 	STR	R5, [R0]		; Store upper part of result
 

@@ -3,20 +3,48 @@
 # ARM Simulator Update
 #
 
-use Tk;
-use Tk::ProgressBar;
+# Whiptail/Dialog:
+# whiptail --backtitle "ARM Simulator Update" --yesno "Hello" 19 70
+# for x in {0,10,20,30,40,50,60,70,80,90,100}; do echo $x; sleep 1; done|whiptail --backtitle "ARM Simulator Update" --gauge "Downloading..." 6 70 0
+
+
 use LWP::UserAgent;
 use HTTP::Request;
 use IO::Socket::INET;
-use URI;
 use Digest::MD5;
 use Archive::Tar;
+use URI;
 use Cwd;
+
+# Find some way to display GUIs
+if ( $ARGV[0] =~ m/^-/ ) {
+    print "ARM Simulator Update\nUsage: update.pl [interface]\n\nAvailable interfaces:\n\ntk dialog whiptail nonfancy\n";
+    exit;
+}
+my @displays = ('tk','dialog','whiptail','nonfancy');
+my $extcmd;
+my $extopts = '--backtitle "ARM Simulator Update"';
+shift @displays if $^O ne 'MSWin32' and !$ENV{DISPLAY};
+unshift @displays, $ARGV[0] if $ARGV[0] =~ m/^(tk|whiptail|dialog|nonfancy)$/;
+if ( $displays[0] eq 'tk' ) {
+    eval "use Tk;use Tk::ProgressBar;1" or shift @displays;
+}
+while ( $displays[0] eq 'dialog' or $displays[0] eq 'whiptail') {
+    foreach ( qw|/bin /usr/bin /usr/local/bin /sbin /usr/sbin /usr/local/sbin|, split(':', $ENV{PATH}) ) {
+	$extcmd = "$_/$displays[0]";
+	last if -x $extcmd;
+    }
+    last if -x $extcmd;
+}
+unless ( $displays[0] ) { die "Sorry, no suitable display method found." }
+my $display = $displays[0];
+$display = 'dialog' if $display eq 'whiptail';
 
 $Archive::Tar::CHOWN = 0;
 $| = 1;
 
-my $myversion = 1;			# Version of update.pl
+my $asu_host = $ENV{ASU_HOST}||'nand.homelinux.com:8888';
+my $myversion = 2;			# Version of update.pl
 
 my $win32 = 0;
 my $ShellExecute;
@@ -29,43 +57,14 @@ my $imgdata = '';
 while ( <DATA> ) { $imgdata .= $_ }
 
 my $title = 'ARM Simulator Update';
-my $update_url = 'http://nand.homelinux.com:8888/~nand/blosxom/update/au_check.cgi?updater='.$myversion;
+my $update_url = 'http://'.$asu_host.'/~nand/blosxom/update/au_check.cgi?updater='.$myversion;
 
 my $wiztitle = '';
-my $top = new Tk::MainWindow(-title => $title);
 
-my $topframe = $top->Frame(-background => 'white',-height=>60,-width => 500);
-my $icon = $top->Photo(-data => $imgdata);
-$topframe->pack();
-$topframe->Label(-text => " ", -background => 'white')->pack(-side => 'left');
-$topframe->Label(-textvariable => \$wiztitle, -background => 'white', -anchor => 'w', -justify => 'left', -width => 60, -height=>4)->pack(-side => 'left');
-$topframe->Label(-text => " ", -background => 'white')->pack(-side => 'right');
-$topframe->Label(-image => $icon, -width => 48, -height=>48, -background => 'white')->pack(-side => 'right');
+my $top, $mainframe, $cancel, $bfl, $next, $back, $bg, $progrange;
+my @pagewidgets;
 
-my $omainframe = $top->Frame(-border => 2,-relief => 'groove');
-$omainframe->pack(-fill => 'both',-expand => 'both');
-my $mainframe = $omainframe->Frame();
-$mainframe->pack(-padx => 12, -pady => 12,-fill => 'both',-expand => 'both');
-my @pagewidgets =();
-
-my $butframe = $top->Frame();
-$butframe->pack(-fill => 'x', -padx => 7, -pady => 7);
-my $cancel = $butframe->Button(-text => 'Cancel', -width => 9,
-			       -command => \&WizCancel);
-$cancel->pack(-side => 'right');
-my $bfl = $butframe->Label(-text => ' ');$bfl->pack(-side => 'right');
-my $next = $butframe->Button(-text => 'Next >', -width => 9,
-			     -command => \&WizNext);
-$next->pack(-side => 'right');
-my $back = $butframe->Button(-text => '< Back', -width => 9);
-$back->pack(-side => 'right');
-
-$top->update();
-my $bg = $top->cget(-background);
-my $g = $top->geometry();
-$g =~ m/^(\d+)/;
-$top->geometry($1.'x350');
-$top->resizable(0,0);
+tk_init() if $display eq 'tk';
 
 my $page = 0;
 
@@ -85,24 +84,24 @@ close ARM;
 
 sleep 1;
 if ( $version || 1) {
-    $pagewidgets[0]->value(1);
+    set_progress(1);
     $update_url .= '&version='.$version;
 }
 else {
-    $top->messageBox(-icon => 'error', -type => 'OK', -title => $title, -message => "New installations are not currently supported");
+    display_error('error','New installations are not currently supported');
     exit(0);
 }
-$top->update();
+update_display();
 my @current = split("\n",get($update_url));
 if ( scalar (@current) ) {
-    $pagewidgets[0]->value(2);
+    set_progress(2);
 }
 else {
-    $top->messageBox(-icon => 'error', -type => 'OK', -title => $title, -message => "The update server did not respond");
+    display_alert('error','The update server did not respond');
     exit(0);
 }
 
-$top->update();
+update_display();
 
 if ( $current[0] > $version ) {
     sleep 1;
@@ -110,16 +109,122 @@ if ( $current[0] > $version ) {
     WizardPage();
 }
 else {
-    $top->messageBox(-icon => 'info', -type => 'OK', -title => $title, -message => "No updates are available");
+    display_alert('info','No updates are available');
     exit(0);
 }
 
-MainLoop();
+MainLoop() if $display eq 'tk';
 
 unlink "temp/update.tar.gz";
 rmdir 'temp';
 
 sub WizardPage {
+    if ( $display eq 'nonfancy' ) {
+	if ( $page == 0 ) {
+	    print "ARM Simulator Update\n\n  [Basic mode: Install dialog, whiptail or perl/Tk for a better experience]\n\n";
+	    print "Checking for updates...\n";
+	}
+	elsif ( $page == 1 ) {
+	    push @text, "Current version: $version" if $version;
+	    push @text, "Latest version: $current[0]";
+	    push @text, '';
+	    push @text, 'Select Yes to install this update now.' if $version;
+	    if ( !$version ) {
+		push @text, 'Select Yes to install the ARM Simulator into this directory:';
+		my $dir = getcwd();
+		push @text, $dir;
+	    }
+	    push @text, '';
+	    push @text, 'Release Notes for this version:';
+	    push @text, '';
+	    push @text, @current[4..$#current];
+
+	    my $pager = $ENV{PAGER};
+	  FINDPAGER:
+	    foreach my $f ( qw/less more/ ) {
+		last if $pager;
+		foreach my $d ( qw|/bin /usr/bin /usr/local/bin /sbin /usr/sbin /usr/local/sbin|, split(':', $ENV{PATH}) ) {
+		    $pager = "$d/$f" if -x "$d/$f";
+		}
+	    }
+	    if ( $pager ) {
+		my $tfn = "asutemp.$$.txt";
+		open PAGERTMP, ">$tfn";
+		print PAGERTMP join("\n",@text);
+		close PAGERTMP;
+		print join("\n",@text[0..4]),"\n";
+		system $pager,$tfn;
+		unlink $tfn;
+	    }
+	    else {
+		print join("\n",@text[0..10],"[.....]","To view the release notes, get a pager.");
+	    }
+	    print "\n\nInstall or upgrade now?[N] ";
+	    my $r = <STDIN>;
+	    exit 0 if $r !~ m/^y/i;
+	    WizNext();
+	}
+	elsif ( $page == 2 ) {
+	    print "\n\n\n\nStarting download...\n";
+	}
+    }
+    elsif ( $display eq 'dialog' ) {
+	close PROGPIPE;
+	if ( $page == 0 ) {
+	    open PROGPIPE, "|$extcmd $extopts --gauge 'Checking for updates...' 6 70 0";
+	    $progrange = 2;
+	}
+	elsif ( $page == 1 ) {
+	    my @text = ();
+	    push @text, "Current version: $version" if $version;
+	    push @text, "Latest version: $current[0]";
+	    push @text, '';
+	    push @text, 'Select Yes to install this update now.' if $version;
+	    if ( !$version ) {
+		push @text, 'Select Yes to install the ARM Simulator into this directory:';
+		my $dir = getcwd();
+		push @text, $dir;
+	    }
+	    if ( $displays[0] eq 'whiptail' ) {
+		push @text, '';
+		push @text, 'Release Notes for this version:';
+		push @text, '';
+		my $x = join('\n',@current[4..$#current]);
+		$x =~ s/\'//g;
+		$x =~ s/\r//g;
+		push @text, $x;
+	    }
+	    else {
+		push @text, '';
+		push @text, 'To view the Release Notes for this version, select Details.';
+	    }
+
+	    my $rc = 1;
+	    while ( $rc > 0 ) {
+		$rc = system "$extcmd $extopts ".($displays[0] eq 'whiptail'?'--scrolltext':'--help-button --help-label "Details"')." --yesno '".join('\n',@text)."' 19 70";
+		if ( $rc == 512 && $displays[0] ne 'whiptail' ) {
+		    my $fn = "asutemp.$$.txt";
+		    open RN, ">$fn";
+		    my $y =  join("\n",@current[4..$#current]);
+		    $y =~ s/\r//g;
+		    print RN $y;
+		    close RN;
+		    system "$extcmd $extopts --exit-label 'Close' --textbox '$fn' 19 70";
+		    unlink $fn;
+		}
+		elsif ( $rc ) { exit 0 }
+	    }
+	    WizNext();
+	}
+	if ( $page == 2 ) {
+	    open PROGPIPE, "|$extcmd $extopts --gauge 'Starting download...' 6 70 0";
+	    $progrange = 2;
+	}
+    }
+
+
+    # Tk
+    return unless $display eq 'tk';
     foreach ( @pagewidgets ) {
 	$_->destroy();
     }
@@ -144,13 +249,13 @@ sub WizardPage {
 	push @pagewidgets, $w;
 	if ( $version ) {
 	    $wiztitle = "Select updates\n        Updates are available to be installed.";
-	    my $f = $mainframe->Frame();
-	    push @pagewidgets, $f;
-	    $f->pack( -fill => 'x');
-	    $w = $f->Label(-text => "Read more about this update: ");
-	    $w->pack(-side => 'left');
-	    $w = $f->Button(-text => " Go ", -command => \&GoASB);
-	    $w->pack(-side => 'right');
+	    # my $f = $mainframe->Frame();
+	    # push @pagewidgets, $f;
+	    # $f->pack( -fill => 'x');
+	    # $w = $f->Label(-text => "Read more about this update: ");
+	    # $w->pack(-side => 'left');
+	    # $w = $f->Button(-text => " Go ", -command => \&GoASB);
+	    # $w->pack(-side => 'right');
 	    $w = $mainframe->Label(-text => "Click Next to upgrade the ARM simulator installation in this directory.", -justify => 'left', -anchor => 'sw');
 	}
 	else {
@@ -172,6 +277,7 @@ sub WizardPage {
 	}
 	$w->pack( -fill => 'x', -side => 'bottom');
 	push @pagewidgets, $w;
+	AddRelnotesTo($mainframe,'bottom');
     }
     elsif ( $page == 2 ) {
 	$wiztitle = "Please wait\n        The updates you selected are being downloaded and installed.";
@@ -185,7 +291,17 @@ sub WizardPage {
 	$next->configure(-state => 'disabled');
 	$back->configure(-state => 'disabled');
     }
-    $top->update();
+    update_display();
+}
+
+sub AddRelnotesTo {
+    my ($parent,$packside) = @_;
+    my $tw = $parent->Scrolled('Text', -height => 6, -scrollbars => 'e');
+    my $y =  join("\n",@current[4..$#current]);
+    $y =~ s/\r//g;
+    $tw->insert('0.0',$y);
+    $tw->pack(-fill => 'both', -side => $packside);
+    push @pagewidgets, $tw;
 }
 
 sub WizCancel {
@@ -207,11 +323,11 @@ sub WizNext {
 	#}
 	$page=2;
 	WizardPage();
-	$top->update();
+	update_display();
 
 	my $uri = URI->new($current[2]);
-	$downsock = IO::Socket::INET->new($uri->host_port()) or ($top->messageBox(-icon => 'error', -type => 'OK', -title => $title, -message => "Could not download update (error 3)."),exit(0));
-	$top->update();
+	$downsock = IO::Socket::INET->new($uri->host_port()) or (display_alert('error',"Could not download update (error 3)."),exit(0));
+	update_display();
 
 	binmode $downsock;
 	my $p = $uri->path()||'/';
@@ -225,7 +341,7 @@ sub WizNext {
 	    $top->messageBox(-icon => 'error', -type => 'OK', -title => $title, -message => "Could not download update (error 2).");
 	    exit(0)
 	}
-	$top->update();
+	update_display();
 	my $length = 0;
 	while (<$downsock>) {
 	    s/[\r\n]//g;
@@ -238,9 +354,12 @@ sub WizNext {
 	}
 	my $label = $pagewidgets[1];
 	my $pb;
-	$pb = $pagewidgets[0] if $length;
-	$pb->configure(-to => $length) if $pb;
-	$top->update();
+	$progrange = $length;
+	if ( $progrange && $display eq 'tk' ) {
+	    $pb = $pagewidgets[0];
+	    $pb->configure(-to => $progrange);
+	}
+	update_display();
 
 	my $hl = h($length);
 	# Prepare output
@@ -255,20 +374,21 @@ sub WizNext {
 	while ( $rc = read($downsock,$data,$inc) ) {
 	    print OUT $data;
 	    $count += $inc;
-	    $pb->value($count);
-	    $label->configure(-text => $pb?('Downloading: '.h($count).' of '.$hl.'...'):('Downloading: '.h($count).' of unknown...')) unless $count/$inc % 5;
-	    $top->update();
-	    return unless $top;
+	    set_progress($count) if $progrange;
+	    set_status('Downloading: '.h($count).' of '.($progrange?$hl:'unknown').'...') unless $count/$inc % 5;
+	    update_display();
+	    #return unless $top;
 	}
 	close OUT;
-	$pb->value(0) if $pb;
-	$label->configure(-text => 'Verifying download...');
-	$top->update();
+	set_progress(0);
+	set_status('Verifying download...');
+	update_display();
 
 	my $tar = Archive::Tar->new('temp/update.tar.gz',1);
 	my @files = $tar->list_files();
-	$pb->configure(-to => @files+1+2);
-	$top->update();
+	$progrange = @files+1+2;
+	$pb->configure(-to => $proglen) if $display eq 'tk';
+	update_display();
 	$count = 0;
 
 	open IN, "temp/update.tar.gz";
@@ -276,46 +396,52 @@ sub WizNext {
 	my $md5 = Digest::MD5->new();
 	$md5->addfile(IN);
 	my $cksum = lc $md5->hexdigest;
-	print "Checksumming...\n\n";
-	print 'Ours:  ',$cksum,"\n";
-	print 'Valid: ',$current[3],"\n";
+	#print "Checksumming...\n\n";
+	#print 'Ours:  ',$cksum,"\n";
+	#print 'Valid: ',$current[3],"\n";
 
 	if ( $cksum != $current[3] ) {
-	    $top->messageBox(-icon => 'error', -type => 'OK', -title => $title, -message => "Checksum does not match");
+	    display_alert('error', "Checksum does not match");
 	    exit(0)
 	}
 	$count=1;
-	$pb->value($count) if $pb;
-	$cancel->configure(-state => 'disabled');
-	$top->update();
+	set_progress($count);
+	$cancel->configure(-state => 'disabled') if $display eq 'tk';
+	update_display();
 	foreach ( @files ) {
 	    my $fn = $_;
 	    $fn =~ s/^(\.|\d+)\///;
 	    my $pd = $1;
-	    $label->configure(-text => 'Extracting '.$fn.'...');
+	    set_status('Extracting '.$fn.'...');
 	    $count++;
-	    $pb->value($count) if $pb;
-	    $top->update();
+	    set_progress($count);
+	    update_display();
 	    $tar->extract($_);
 	}
-	$label->configure(-text => 'Finishing up...');
-	$pb->value($count+1) if $pb;
-	$top->update();
+	set_status('Finishing up...');
+	set_progress($count+1);
+	update_display();
 	if ( -f "postinstall.pl" ) {
 	    do "postinstall.pl";
 	    unlink "postinstall.pl";
 	}
-	$label->configure(-text => 'Deleting temporary files...');
-	$pb->value($count+2) if $pb;
-	$top->update();
+	set_status('Deleting temporary files...');
+	set_progress($count+2);
+	update_display();
 	undef $tar;
 	unlink "temp/update.tar.gz";
 	rmdir 'temp';
-	$cancel->destroy();
-	$back->destroy();
-	$bfl->destroy();
-	$next->configure(-text => "Finish", -state => 'normal');
-	$label->configure(-text => 'Update complete.');
+	if ( $display eq 'tk' ) {
+	    $cancel->destroy();
+	    $back->destroy();
+	    $bfl->destroy();
+	    $next->configure(-text => "Finish", -state => 'normal');
+	    $label->configure(-text => 'Update complete.');
+	}
+	else {
+	    display_alert('','Update complete.');
+	    exit(0);
+	}
     }
     elsif ( $page == 2 ) {
 	$top->destroy();
@@ -382,6 +508,98 @@ sub get {
     }
 }
 
+sub tk_init {
+    $top = new Tk::MainWindow(-title => $title);
+
+    my $topframe = $top->Frame(-background => 'white',-height=>60,-width => 500);
+    my $icon = $top->Photo(-data => $imgdata);
+    $topframe->pack();
+    $topframe->Label(-text => " ", -background => 'white')->pack(-side => 'left');
+    $topframe->Label(-textvariable => \$wiztitle, -background => 'white', -anchor => 'w', -justify => 'left', -width => 60, -height=>4)
+      ->pack(-side => 'left');
+    $topframe->Label(-text => " ", -background => 'white')->pack(-side => 'right');
+    $topframe->Label(-image => $icon, -width => 48, -height=>48, -background => 'white')->pack(-side => 'right');
+
+    my $omainframe = $top->Frame(-border => 2,-relief => 'groove');
+    $omainframe->pack(-fill => 'both',-expand => 'both');
+    $mainframe = $omainframe->Frame();
+    $mainframe->pack(-padx => 12, -pady => 12,-fill => 'both',-expand => 'both');
+    @pagewidgets =();
+
+    $butframe = $top->Frame();
+    $butframe->pack(-fill => 'x', -padx => 7, -pady => 7);
+    $cancel = $butframe->Button(-text => 'Cancel', -width => 9,
+				-command => \&WizCancel);
+    $cancel->pack(-side => 'right');
+    $bfl = $butframe->Label(-text => ' ');$bfl->pack(-side => 'right');
+    $next = $butframe->Button(-text => 'Next >', -width => 9,
+			      -command => \&WizNext);
+    $next->pack(-side => 'right');
+    $back = $butframe->Button(-text => '< Back', -width => 9);
+    $back->pack(-side => 'right');
+
+    update_display();
+    $bg = $top->cget(-background);
+    my $g = $top->geometry();
+    $g =~ m/^(\d+)/;
+    $top->geometry($1.'x350');
+    $top->resizable(0,0);
+}
+
+sub set_progress {
+    my ($i) = @_;
+    if ( $display eq 'tk' ) {
+	$pagewidgets[0]->value($i)
+    }
+    elsif ( $display eq 'dialog' ) {
+	syswrite(PROGPIPE,int($i/$progrange*100)."\n");
+    }
+    elsif ( $display eq 'nonfancy' ) { }
+    else { die "Unknown display" }
+}
+
+sub set_status {
+    my ($i) = @_;
+    if ( $display eq 'tk' ) {
+	$pagewidgets[1]->configure(-text => $i)
+    }
+    elsif ( $display eq 'dialog' ) {
+	syswrite(PROGPIPE,"XXX\n$i\nXXX\n");
+    }
+    elsif ( $display eq 'nonfancy' ) {
+	print "$i\n";
+    }
+    else { die "Unknown display" }
+}
+
+sub update_display {
+    if ( $display eq 'tk' ) {
+	$top->update();
+    }
+    elsif ( $display eq 'dialog' ) { }
+    elsif ( $display eq 'nonfancy' ) { }
+    else { die "Unknown display" }
+}
+
+sub display_alert {
+    my ($icon, $message) = @_;
+    if ( $display eq 'tk' ) {
+	$top->messageBox(-icon => $icon, -type => 'OK', -title => $title, -message => $message);
+    }
+    elsif ( $display eq 'dialog' ) {
+	close PROGPIPE;
+	$message =~ s/\n/\\n/g;
+	system "$extcmd $extopts --msgbox '".$message."' ".($displays[0] eq 'whiptail'?'8':'5')." 30";
+    }
+    elsif ( $display eq 'nonfancy' ) {
+	print '='x70,"\n";
+	print $message,"\n";
+	print '='x70,"\n";
+	print "                    (Press Enter to continue)\n";
+	<STDIN>;
+    }
+    else { die "Unknown display" }
+}
 exit;
 
 # Download Pixmap

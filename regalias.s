@@ -1,0 +1,6 @@
+FOO .req R0
+	MOV FOO, #90
+	OUT FOO
+	OUT R0
+	CMP R0, FOO
+	DIENE

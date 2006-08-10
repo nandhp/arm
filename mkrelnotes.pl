@@ -5,6 +5,8 @@
 use Digest::MD5 qw/md5_hex/;
 
 open OUT, ">releasenotes.html" or die "Error opening release notes: $!";
+open TEXT, ">releasenotes.txt" or die "Error opening text output: $!";
+my $globalcss = 'font-size:9pt';
 print OUT <<END;
 <!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
 <HTML>
@@ -36,6 +38,7 @@ my $codename = '';
 
 open ARM, "arm.pl" or die "Opening arm.pl: $!";
 print OUT "<H1>ARM Simulator Release Notes</H1>";
+print TEXT "ARM Simulator Release Notes\n";
 my %instructions = ();
 my @inskinds = ();
 while (<ARM>) {
@@ -67,6 +70,7 @@ while (<ARM>) {
 
 push @toc, "Instruction Summary",'+',@inskinds,'-',"What's New",'+',"Changes","Diff",'-', "Known Issues","Related Links";
 print OUT "<P>Version $version";
+print TEXT "Version $version\n\n";
 #print OUT " \"$codename\"" if $codename;
 print OUT "\n\n<H2>Contents</H2>\n";
 my @i = ();
@@ -90,13 +94,16 @@ my $section = shift(@toc);
 my $anchor = md5_hex($section);
 
 print OUT "<H2><A NAME=\"$anchor\">".$section."</A></H2>\n";
+print TEXT $section, "\n";
 shift(@toc);
 foreach ( @inskinds ) {
     shift @toc;
     my $anchor = md5_hex($_);
     print OUT "<H3><A NAME=\"$anchor\">$_</A></H3>\n<UL>\n";
+    print TEXT "  $_\n";
     foreach ( @{$instructions{$_}} ) {
 	print OUT "<LI>$_</LI>\n";
+	print TEXT "   * $_\n";
     }
     print OUT "</UL>\n";
 }
@@ -107,6 +114,7 @@ $section = shift(@toc);
 $anchor = md5_hex($section);
 
 print OUT "<H2><A NAME=\"$anchor\">".$section."</A></H2>\n";
+print TEXT "\n$section\n";
 shift(@toc);
 
 # Changes
@@ -118,7 +126,16 @@ print OUT "<H3><A NAME=\"$anchor\">".$section."</A></H3>\n";
 print OUT "<UL>\n";
 open CHANGELOG, "ChangeLog" or die "Can't open ChangeLog: $!\n";
 while (<CHANGELOG>) { last if m/^($version|LATEST)\s*$/ }
-while (<CHANGELOG>) { next if m/^\s*$/;last if m/^\w/;m/^\s+(-?)\s+(.+?)[\r\n]+$/; print OUT ($1?'<LI>':'')."$2\n" if $2 }
+while (<CHANGELOG>) {
+    next if m/^\s*$/;
+    last if m/^\w/;
+    m/^\s+(-?)\s+(.+?)[\r\n]+$/;
+    if ( $2 ) {
+	print OUT ($1?'<LI>':'')."$2\n";
+	print TEXT "  * $2\n" if $1;
+	print TEXT "    $2\n" unless $1;
+    }
+}
 print OUT "</UL>\n";
 close CHANGELOG;
 

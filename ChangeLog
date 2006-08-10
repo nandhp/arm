@@ -1,3 +1,25 @@
+20060810
+	- Assembler:    Fixed bug in DCB
+	- Assembler:    Added support for .req register aliasing
+	- Assembler:    Added support for character escapes in strings
+	- Assembler:    Added support for @ comments and pseudo instructions
+	- Assembler:    Rewrote and improved the asm input parser
+	- ARM Debugger: Addded "W" (Where) command
+	- ARM Debugger: Addded "CPSR" and "SPSR" commands
+	- ARM Debugger: Addded "Q" (Quiet) prefix for "C" command
+	- Instructions: All remaining DPI: RSB, RSC, TST, TEQ, BIC
+	- Instructions: CIES instructions: BX,  BLX, CLZ, BKPT
+	- Instructions: Standard multiply: MUL, MLA
+	- Instructions: MIES (Execution only): STRH, LDRH, LDRSB, LDRSH
+	- Global Fixes: Added support for large immediates by rotation.
+	- Global Fixes: Convert to hex addressing
+	- Global Fixes: Fatal errors now return to the ARM Debugger if active
+	- Global Fixes: All errors now provide better location information
+	- Global Fixes: Many minor changes
+	- Global Fixes: Fix support for FOP2 rotate and shift by 0 and 32
+	- Other:        Added support for ELF binary loading
+	- Other:        Major improvements to ARM Simulator Update
+
 20051115
 	- Debugging Information Format now supports compressed debugging
 	  information ("ZBG", default), or the old uncompressed "DBG" format.
