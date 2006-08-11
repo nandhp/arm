@@ -1,3 +1,9 @@
+20060811
+	- Global Fixes: Several minor changes
+	- Execution:    Implemented an Instruction Cache
+	- Execution:    Added Exection support for: STRH
+	- Execution:    Made blazing fast
+
 20060810
 	- Assembler:    Fixed bug in DCB
 	- Assembler:    Added support for .req register aliasing

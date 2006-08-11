@@ -1,3 +1,4 @@
+#!/usr/bin/perl
 #use integer;
 
 # The MUL (multiply with 32 bit result) and MLA (multiply and accumulate)
