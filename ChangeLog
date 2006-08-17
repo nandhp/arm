@@ -1,3 +1,7 @@
+20060817
+	- Execution:    More performance improvements
+	- Global Fixes: Reorganized for added speed and clarity
+
 20060811
 	- Global Fixes: Several minor changes
 	- Execution:    Implemented an Instruction Cache

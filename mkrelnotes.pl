@@ -59,7 +59,7 @@ while (<ARM>) {
 		$kind = $1;
 		push @inskinds,$kind;
 	    }
-	    elsif ( m/^(\w+)\s*=\>/ ) {
+	    elsif ( m/^['"]?(\w+)['"]?\s*=\>/ ) {
 		push @{$instructions{$kind}}, $1;
 	    }
 	    elsif ( m/^\);/ ) { last } # I hate cperl mode so much / ) {}
@@ -131,9 +131,15 @@ while (<CHANGELOG>) {
     last if m/^\w/;
     m/^\s+(-?)\s+(.+?)[\r\n]+$/;
     if ( $2 ) {
-	print OUT ($1?'<LI>':'')."$2\n";
-	print TEXT "  * $2\n" if $1;
-	print TEXT "    $2\n" unless $1;
+	my $l = $2;
+	my $b = $1;
+	my $hl = $l;
+	if ( $b && $l =~ m/^([-\w\s]+):\s+(.+)/ ) {
+	    $hl = "<B>$1</B>: $2";
+	}
+	print OUT ($b?'<LI>':'')."$hl\n";
+	print TEXT "  * $l\n" if $b;
+	print TEXT "    $l\n" unless $b;
     }
 }
 print OUT "</UL>\n";

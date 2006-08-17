@@ -12,8 +12,14 @@ use integer;
 use Getopt::Long qw(:config gnu_getopt);
 use Pod::Usage;
 use Term::ReadLine;
+use constant {B => 0, DPI => 1, MUL => 2, MRS => 3, MSR => 4, CLZ => 5,
+	      ARMPL => 6, MEMOR => 7, LDM => 8, SWI => 9, BKPT => 10,
+	      ARMEND => 11, ARMDIE => 12, CONSTANT => 13, UNKNOWN => 14,
+	      DEFAULT => 15, IMMED => 16, OUT => 17, HEX => 18, BYTES => 19 };
+use constant {EQ=>0, NE=>1, CS=>2,  CC=>3,  MI=>4,  PL=>5,  VS=>6,  VC=>7,
+	      HI=>8, LS=>9, GE=>10, LT=>11, GT=>12, LE=>13, AL=>14, NV=>15};
 
-my $VERSION='20060811'; # yyyymmdd
+my $VERSION='20060817'; # yyyymmdd
 
 $| = 1;					# Autoflush on
 
@@ -358,103 +364,139 @@ sub show_help {
     exit(1);
 }
 
-sub vprint      { print  @_ if $v >= 1 }
-sub vvprint     { print  @_ if $v >= 2 }
-sub vprintf     { printf @_ if $v >= 1 }
-sub vvprintf    { printf @_ if $v >= 2 }
+sub nprint     { print @_ if $v >= 0 } sub nprintf    { printf @_ if $v >= 0 }
+sub vprint     { print @_ if $v >= 1 } sub vprintf    { printf @_ if $v >= 1 }
+sub vvprint    { print @_ if $v >= 2 } sub vvprintf   { printf @_ if $v >= 2 }
 
-my %conds = (
-	     EQ => '0000',# Equal: If the Z flag is set after a comparison.
-	     NE => '0001',# Not equal: If Z flag is clear after a comparison.
-	     CS => '0010',# Carry Set: Set if the C flag is set after an
-                          # arithmetical operation OR a shift operation,
-                          # the result of which cannot be represented in
-                          # 32bits. You can think of the C flag as the 33rd
-                          # bit of the result.
- 	     HS => '0010',# Unsigned higher or same (i.e. CS)
-	     CC => '0011',# Carry Clear: The reverse of CS.
-	     LO => '0011',# Unsigned lower (i.e. CC)
-	     MI => '0100',# Negative: If the N flag set after an arithmetic op.
-	     PL => '0101',# Positive or zero: If the N flag is clear after
-                          # an arithmetical operation. For the purposes of
-                          # defining 'plus', zero is positive because it
-                          # isn't negative...
-	     VS => '0110',# Overflow: If V flag set after arithmetic op,
-                          # the result of which won't fit into a 32bit dest reg
-	     VC => '0111',# No overflow: If V flag is clear, reverse of VS.
-	     HI => '1000',# Unsigned higher: If after a comparison the C
-                          # flag is set AND the Z flag is clear.
-	     LS => '1001',# Unsigned lower or same: If after a comparison
-                          # the C flag is clear OR the Z flag is set.
-	     GE => '1010',# Signed greater than or equal: If after comparison..
-	                  # the N flag is set AND the V flag is set
-	                  # or...
-	                  # the N flag is clear AND the V flag is clear.
-	     LT => '1011',# Signed less than: If after a comparison...
-	                  # the N flag is set AND the V flag is clear
-	                  # or...
-	                  # the N flag is clear AND the V flag is set.
-	     GT => '1100',# Signed greater than: If after a comparison...
-	                  # the N flag is set AND the V flag is set
-	                  # or...
-	                  # the N flag is clear AND the V flag is clear
-	                  # and...
-	                  # the Z flag is clear.
-	     LE => '1101',# Signed less than or equal: If after a comparison...
-	                  # the N flag is set AND the V flag is clear
-	                  # or...
-	                  # the N flag is clear AND the V flag is set
-	                  # and...
-	                  # the Z flag is set.
-	     AL => '1110',# Always (normally omitted)
-	     NV => '1111',# Never (do not use, see Architecture Manual pg A3-5)
-	    );
+# Generate lists of things
+my %conds= ();
+my @rdpi = qw/AND EOR SUB RSB ADD ADC SBC RSC TST TEQ CMP CMN ORR MOV BIC MVN/;
+my @conds= qw/EQ NE CS CC MI PL VS VC HI LS GE LT GT LE AL NV/;
+my @kinds= qw/B DPI MUL MRS MSR CLZ ARMPL MEMOR LDM SWI/;
+my @iswis= qw/BKPT ARMEND ARMDIE/; # SWIs internally
+my    $ConditionEval = '(';
+my    $AssemblerEval = '(';
+my      $DecoderEval = '(';
+my     $ExecutorEval = '(';
+my $DisassemblerEval = ' ';
+my  $DPIExecutorEval = '(';
+for (my $i=0;$i<=$#conds;$i++ ) {
+    $conds{$conds[$i]} = sprintf('%04b',$i);
+    $ConditionEval .= '\&Condition_'.$conds[$i].',';
+}
+my $swionly = 0;
+foreach ( @kinds, 0, @iswis ) {
+    ($swionly = 1, next) unless $_;
+    $AssemblerEval     .= '\&Assemble_'.$_.',';
+    $DecoderEval       .= '\&Decode_'.$_.',';
+    $ExecutorEval      .= '\&Execute_'.($swionly?'SWI':$_).',';
+    $DisassemblerEval  .= '\&Disassemble_'.$_.',';
+}
+foreach ( @rdpi ) {
+    $DPIExecutorEval   .= '\&DPI_'.$_.',';
+}
+my    @Conditions = eval(   $ConditionEval.')');
+my    @Assemblers = eval(   $AssemblerEval.')');
+my      @Decoders = eval(     $DecoderEval.')');
+my     @Executors = eval(    $ExecutorEval.')');
+my @Disassemblers = (eval($DisassemblerEval   ),
+		     sub { # CONSTANT
+			 my ($mempos,$cond,$instruction) = @_; # FIXME optimze
+			 return sprintf('DCW &%X',$instruction->{decimal});
+		     },
+		     sub { return 'UNKNOWN' }, # UNKNOWN
+		    );
+my  @DPIExecutors = eval( $DPIExecutorEval.')');
+my @DeclassifyByKind = ( \&Declassify_DPI0, # 000 - DPI, CIES, Multiply
+			 \&Declassify_DPI1, # 001 - DPI, MSR
+			 \&Declassify_LDRI, # 010 - LDR/STR Immediate Offset
+			 \&Declassify_LDRR, # 011 - LDR/STR Register Offset
+			 \&Declassify_LDM,  # 100 - LDM/STM
+			 \&Declassify_B,    # 101 - B/BL
+			 \&Declassify_CPLS, # 110 - Coprocessor LDR/STR/DRT
+			 \&Declassify_CPSI, # 111 - Coprocessor DP/RT, SWI
+		       );
+my @DeclassifyCPSI = ( sub { 0 }, \&Decode_SWI );
+my @DeclassifyARMPL = ( \&Decode_ARMPL, # 0000 OUT  Register
+			\&Decode_ARMPL, # 0001 OUTS Register/Hex
+			\&Decode_ARMPL, # 0010 OUTB Register/Bytes
+			\&Decode_ARMPL, # 0011
+			\&Decode_ARMEND,# 0100
+			\&Decode_ARMDIE,# 0101
+			eval('sub { 0 },'x10));
+my %SWI = ( 0x02 => \&SWI_OS_Write0,
+	    0x11 => \&SWI_OS_Exit,
+	    0x12 => \&SWI_ARMSIM_BKPT,
+	    0x13 => \&SWI_ARMSIM_DIE,
+	    0xF00000 => sub { }, # IMB All, see DDI0100E pg A2-29
+	    0xF00001 => sub { }, # IMB Range, see DDI0100E pg A2-29
+	    0x900001 => \&SWI_sys_exit,
+	    0x900018 => \&SWI_sys_getuid, # sys_getuid16
+	    0x90002F => \&SWI_sys_getgid, # sys_getgid16
+	    0x900031 => \&SWI_sys_getuid, # sys_geteuid16
+	    0x900032 => \&SWI_sys_getgid, # sys_getegid16
+	    0x900036 => \&SWI_sys_ioctl,
+	    0x90005A => \&SWI_sys_mmap,
+	    0x9000C7 => \&SWI_sys_getuid, # sys_getuid
+	    0x9000C8 => \&SWI_sys_getgid, # sys_getgid
+	    0x9000C9 => \&SWI_sys_getuid, # sys_geteuid
+	    0x9000CA => \&SWI_sys_getgid, # sys_getegid
+	  );
+opendir DIR, '.';
+foreach ( readdir DIR ) {
+    next if m/^\./;
+    next unless -f $_;
+    next unless m/\.swi$/;
+    do $_;
+}
+closedir DIR;
 
 my %instructions = (
 		    # Unimplemented instructions
 
 		    # Implemented instructions
-		    AND => '0000',
-		    EOR => '0001',
-		    SUB => '0010',
-		    ADD => '0100',
-		    ADC => '0101',
-		    CMP => '1010',
-		    ORR => '1100',
-		    MOV => '1101',
-		    B   => '-1',
-		    BL  => '-1',
-		    BX  => '-6',
-		    BLX => '-6',
-		    BKPT=> '-6',
-		    SWI => '-4',
+		    'AND' => '0000',
+		    'EOR' => '0001',
+		    'SUB' => '0010',
+		    'ADD' => '0100',
+		    'ADC' => '0101',
+		    'CMP' => '1010',
+		    'ORR' => '1100',
+		    'MOV' => '1101',
+		    'B'   => '-1',
+		    'BL'  => '-1',
+		    'BX'  => '-6',
+		    'BLX' => '-6',
+		    'BKPT'=> '-6',
+		    'SWI' => '-4',
 		    # Beta instructions
-		    RSB => '0011',
-		    SBC => '0110',
-		    RSC => '0111',
-		    TST => '1000',
-		    TEQ => '1001',
-		    MVN => '1111',
-		    LDR => '-2',
-		    STR => '-2',
-		    LDM => '-5',
-		    STM => '-5',
+		    'RSB' => '0011',
+		    'SBC' => '0110',
+		    'RSC' => '0111',
+		    'TST' => '1000',
+		    'TEQ' => '1001',
+		    'MVN' => '1111',
+		    'LDR' => '-2',
+		    'STR' => '-2',
+		    'LDM' => '-5',
+		    'STM' => '-5',
 		    # Alpha instructions
-		    CMN => '1011',
-		    BIC => '1110',
-		    CLZ => '-6',
-		    MSR => '-7',
-		    MRS => '-7',
-		    MUL => '-8',
-		    MLA => '-8',
+		    'CMN' => '1011',
+		    'BIC' => '1110',
+		    'CLZ' => '-6',
+		    'MSR' => '-7',
+		    'MRS' => '-7',
+		    'MUL' => '-8',
+		    'MLA' => '-8',
 
 		    # Nonstandard instructions
-		    ADR => '-3',
-		    NOP => '-3',
-		    DIE => '-3',
-		    END => '-3',
-		    OUT => '-3',
+		    'ADR' => '-3',
+		    'NOP' => '-3',
+		    'DIE' => '-3',
+		    'END' => '-3',
+		    'OUT' => '-3',
 		   );
+
 my %extra = (
 	     S  => 1,
 	     H  => 1,
@@ -516,7 +558,7 @@ goto disassemble if $mode > 1;		# I know that GOTO is bad, but I did
                                         # the next 300 lines.
 
 # Process the program
-print "Parsing source...\n" if $v >= 0;
+nprint "Parsing source...\n";
 
 while (my $line = <>) {
     $line =~ s/[\r\n]//g;
@@ -682,7 +724,7 @@ continue { close ARGV if eof }		# To reset $.
   ;
 
 # Now produce object code.
-print "Assembling...\n" if $v >= 0;
+nprint "Assembling...\n";
 
 my $OUTPUT = undef;
 if ( $o ) {
@@ -989,7 +1031,7 @@ foreach my $item ( @program ) {
 }
 
 if ( $d ) {
-    print "Producing debugging information...\n" if $v >= 0;
+    nprint "Producing debugging information...\n";
     my $debugdata = "$VERSION|";
     my @dbgtemp = ();
 
@@ -1015,19 +1057,19 @@ if ( $d ) {
 
     my $dbglen;
     if ( $use_zlib ) {
-	print "Compressing...";
+	nprint "Compressing...";
 	my $deflated = $debugdata;
 	$debugdata = compress($deflated,9);
 
 	if ( length($debugdata) >= length($deflated) ) {
-	    print "Skipping...";
+	    nprint "Skipping...";
 	    $debugdata = $deflated;
 	    $use_zlib = 0;
 	}
 
 	$dbglen = length($debugdata);
 	$debugdata = '|'.$debugdata while length($debugdata)%4; # ALIGN
-	print "done.\n";
+	nprint "done.\n";
     }
     elsif ( !$use_zlib ) {
 	$debugdata .= '|' while length($debugdata)%4; # ALIGN
@@ -1036,7 +1078,7 @@ if ( $d ) {
     $debugdata .= ($use_zlib?'|ZBG':'|DBG').pack('V',$dbglen);
 
     $memory .= $debugdata; # FIXME
-    printf("Produced %d bytes.\n",$dbglen);
+    nprintf("Produced %d bytes.\n",$dbglen);
 }
 
 if ( $OUTPUT ) {
@@ -1101,7 +1143,7 @@ my $cachelimit = $cacheless?0:300;
 my $tcachelimit = int($cachelimit/3);
 my $pcachelimit = int($cachelimit/2);
 my %mempos = ();
-my $dbgstart = -1;
+my $dbgstart = 0x7FFFFFFF;
 
 if ( $d ) {
     if ( $mode == 3 ) {
@@ -1185,10 +1227,19 @@ else {
 #setmem(0x1004,0x1020,4);
 #setmem(0x1020,unpack('V',"-v\0\0"),4);
 $reg[15]=$startaddr+8; # PC, 2 ahead, multiply by four
-$reg[13]=length($memory)+0xF000;
+
+# Memory allocation
+my $memSize = length($memory);
+my $pageSize = 0x1000;
+my $stackSize = 0xF000 & ~($pageSize-1);
+$reg[13]=(($memSize+$pageSize-1) & (~($pageSize-1))) + $stackSize;
+my $heapStart = $reg[13];
+my $heapBase = $heapStart;
+#$reg[13]=length($memory)+0xF000;
 
 my $rmeight;
 my $died = 0;
+my $last = 0;
 my $debugnormv = $v;
 
 INSTRUCTION:
@@ -1200,12 +1251,12 @@ while ( $reg[15]<=length($memory)+4 ) {	# Plus Eight. Sigh.
     my $rl = $rlabels[$reg[15]-8];
     print "$rl:\n" if $rl && $mode == 2;
     my $check = 1;
-    $check = 0 if $mode == 2 && ($o or $q);
+    $check = 0 if ($mode == 2 && $o) or ($mode == 3 && $v < 0);
 
     my %instruction = %{get_instruction($reg[15]-8,1,$check)};
 
     if ( $mode == 2 ) {
-	my $das = disassemble_instruction(\%instruction,$reg[15]-8);
+	my $das = disassemble_instruction($reg[15]-8, \%instruction);
 	print DIO "\t",$das,"\n"
 	  if $o or $q and $das ne '[DEBUG INFO]';
 	$reg[15] += 4;
@@ -1217,7 +1268,7 @@ while ( $reg[15]<=length($memory)+4 ) {	# Plus Eight. Sigh.
     my $oldpc = $reg[15]; # Save old PC so if it changes we don't increment
 
     # ARM Debugger
-    if ( $d ) {
+    if ( $debugnext && $d ) {
 	my ($listline) = (0);
 	my $debugline;
 	print "$died\nUse 'q' to quit the debugger.\n\n" if $died;
@@ -1325,303 +1376,34 @@ while ( $reg[15]<=length($memory)+4 ) {	# Plus Eight. Sigh.
     }
     exit(1) if $died;
 
-
-    my $cond = $conds{$instruction{cond}};
-
     # Check conditional
-    if ( $cond eq '1110' ) { }
-    elsif ( $cond eq '1111' ) { $reg[15]+=4; next }
-    elsif ( $cond eq '0000' ) { vprint "EQ: Z=$Z\n";
-			      ($reg[15]+=4,next) if !$Z } # Skip if NE
-    elsif ( $cond eq '0001' ) { vprint "NE: Z=$Z\n";
-			      ($reg[15]+=4,next) if $Z }
-    elsif ( $cond eq '0010' ) { vprint "CS: C=$C\n";
-			      ($reg[15]+=4,next) if !$C }
-    elsif ( $cond eq '0011' ) { vprint "CC: C=$C\n";
-			      ($reg[15]+=4,next) if $C }
-    elsif ( $cond eq '0100' ) { vprint "MI: N=$N\n";
-			      ($reg[15]+=4,next) if !$N }
-    elsif ( $cond eq '0101' ) { vprint "PL: N=$N\n";
-			      ($reg[15]+=4,next) if $N }
-    elsif ( $cond eq '0110' ) { vprint "VS: V=$V\n";
-			      ($reg[15]+=4,next) if !$V }
-    elsif ( $cond eq '0111' ) { vprint "VC: V=$V\n";
-			      ($reg[15]+=4,next) if $V }
-    elsif ( $cond eq '1000' ) { vprint "HI: C=$C,Z=$Z\n";
-			      ($reg[15]+=4,next) if !$C || $Z }
-    elsif ( $cond eq '1001' ) { vprint "LS: C=$C,Z=$Z\n";
-			      ($reg[15]+=4,next) if $C && !$Z }
-    elsif ( $cond eq '1010' ) { vprint "GE: N=$N,V=$V,Z=$Z\n";
-			      ($reg[15]+=4,next) if $V != $N }
-    elsif ( $cond eq '1011' ) { vprint "LT: N=$N,V=$V,Z=$Z\n";
-			      ($reg[15]+=4,next) if $V == $N }
-    elsif ( $cond eq '1100' ) { vprint "GT: N=$N,V=$V,Z=$Z\n";
-			      ($reg[15]+=4,next) if $V != $N || $Z }
-    elsif ( $cond eq '1101' ) { vprint "LE: N=$N,V=$V,Z=$Z\n";
-			      ($reg[15]+=4,next) if $V == $N && !$Z }
-    else { throw("Unsupported conditional $cond at ".strloc($reg[15]-8)) }
+    if ( $instruction{cond} != AL ) {
+	$Conditions[$instruction{cond}]() or ($reg[15]+=4,next);
+    }
+# my $cond = $instruction{cond};
+# if ( $cond == AL ) { }                                   # Skip if:
+# elsif ( $cond == EQ ) { vprint "EQ: Z=$Z\n"; ($reg[15]+=4,next) if !$Z }
+# elsif ( $cond == NE ) { vprint "NE: Z=$Z\n"; ($reg[15]+=4,next) if  $Z }
+# elsif ( $cond == CS ) { vprint "CS: C=$C\n"; ($reg[15]+=4,next) if !$C }
+# elsif ( $cond == CC ) { vprint "CC: C=$C\n"; ($reg[15]+=4,next) if  $C }
+# elsif ( $cond == MI ) { vprint "MI: N=$N\n"; ($reg[15]+=4,next) if !$N }
+# elsif ( $cond == PL ) { vprint "PL: N=$N\n"; ($reg[15]+=4,next) if  $N }
+# elsif ( $cond == VS ) { vprint "VS: V=$V\n"; ($reg[15]+=4,next) if !$V }
+# elsif ( $cond == VC ) { vprint "VC: V=$V\n"; ($reg[15]+=4,next) if  $V }
+# elsif ( $cond == HI ) { vprint "HI: C=$C,Z=$Z\n";($reg[15]+=4,next) if !$C ||  $Z }
+# elsif ( $cond == LS ) { vprint "LS: C=$C,Z=$Z\n";($reg[15]+=4,next) if  $C && !$Z }
+# elsif ( $cond == GE ) { vprint "GE: N=$N,V=$V\n";($reg[15]+=4,next) if  $V !=  $N }
+# elsif ( $cond == LT ) { vprint "LT: N=$N,V=$V\n";($reg[15]+=4,next) if  $V ==  $N }
+# elsif ( $cond == GT ) { vprint "GT: N=$N,V=$V,Z=$Z\n"; ($reg[15]+=4,next) if $V != $N ||  $Z }
+# elsif ( $cond == LE ) { vprint "LE: N=$N,V=$V,Z=$Z\n"; ($reg[15]+=4,next) if $V == $N && !$Z }
+# elsif ( $cond == NV ) { $reg[15]+=4; next }
+# else {throw("Unsupported condition $conds[$cond] at ".strloc($reg[15]-8))}
 
     # EXECUTE
-    if ( $instruction{kind} eq 'B' ) { # Branch
-	if ( $instruction{link} ) {
-	    $reg[14]=$reg[15]-4; # PC+8-8+4
-	    modreg(14);
-	    vprint "Link: Return to instruction $reg[14]\n";
-	}
-	if ( $instruction{exchange} ) {
-	    throw("Thumb mode not supported at ".strloc($reg[15]-8))
-	      if $reg[15] & 1;
-	    $reg[15] = $reg[$instruction{register}] & 0xFFFFFFFE;
-	}
-	else {
-	    $reg[15]+=$instruction{immediate};
-	}
-	vprint 'Branch: Branching to '.$reg[15]."\n";
-	modreg(15);
-    }
-    elsif ( $instruction{kind} eq 'DPI' ) { # Data Processing Instructions
-	# Operand 2
-	my $op2 = $instruction{srcimmed} ?
-	  $instruction{source} : $reg[$instruction{source}];
-	my $offset = $instruction{offsetreg} ?
-	  $reg[$instruction{offset}] : $instruction{offset};
+    $Executors[$instruction{kind}](\%instruction) or
+      throw("Undefined instruction $instruction{kind} at ".strloc($reg[15]-8));
 
-	($op2, $fopco) = do_shift($op2,$instruction{shifttype},$offset,$instruction{srcimmed});
-
-	my $opcode = $instruction{opcode};
-	my $rn = $instruction{rn};
-	my $rd = $instruction{rd};
-	my $S = $instruction{sbit};
-	if    ( $opcode eq '0000' ) { # AND
-	    $reg[$rd] = armand($reg[$rn],$op2,$S);
-	    modreg($rd);
-	}
-	elsif ( $opcode eq '0001' ) { # EOR
-	    $reg[$rd] = armxor($reg[$rn],$op2,$S);
-	    modreg($rd);
-	}
-	elsif ( $opcode eq '0010' ) { # SUB
-	    $reg[$rd] = armsub($reg[$rn],$op2,1,$S);
-	    modreg($rd);
-	}
-	elsif ( $opcode eq '0011' ) { # RSB
-	    $reg[$rd] = armsub($op2,$reg[$rn],1,$S);
-	    modreg($rd);
-	}
-	elsif ( $opcode eq '0100' ) { # ADD
-	    $reg[$rd] = armadd($reg[$rn],$op2,0,$S);
-	    modreg($rd);
-	}
-	elsif ( $opcode eq '0101' ) { # ADC
-	    $reg[$rd] = armadd($reg[$rn],$op2,$C?1:0,$S);
-	    modreg($rd);
-	}
-	elsif ( $opcode eq '0110' ) { # SBC
-	    $reg[$rd] = armsub($reg[$rn],$op2,0,$S);
-	    modreg($rd);
-	}
-	elsif ( $opcode eq '0111' ) { # RSC
-	    $reg[$rd] = armsub($op2,$reg[$rn],0,$S);
-	    modreg($rd);
-	}
-        elsif ( $opcode eq '1000' ) { # TST
-	    armand($reg[$rn],$op2,1);
-        }
-	elsif ( $opcode eq '1001' ) { # TEQ
-	    armor($reg[$rn],$op2,1);
-        }
-	elsif ( $opcode eq '1010' ) { # CMP
-	    armsub($reg[$rn],$op2,1,1)
-	}
-	elsif ( $opcode eq '1011' ) { # CMN
-	    armadd($reg[$rn],$op2,0,1)
-	}
-	elsif ( $opcode eq '1100' ) { # ORR
-	    $reg[$rd] = armor($reg[$rn],$op2,$S);
-	    modreg($rd);
-	}
-	elsif ( $opcode eq '1101' ) { # MOV
-	    #$reg[$rd] = $op2;
-	    $reg[$rd] = armor(0,$op2,$S); # On ARM3+, does odd things with CPSR
-	    print "Warning: MOVS to R15 at ".strloc($reg[15]-8).".\n"
-	      if $rd == 15 && $S;
-	    modreg($rd);
-	}
-	elsif ( $opcode eq '1110' ) { # BIC
-	    $reg[$rd] = armand($reg[$rn],~$op2,$S);
-	    modreg($rd);
-	}
-	elsif ( $opcode eq '1111' ) { # MVN
-	    $reg[$rd] = ~$op2;
-	    modreg($rd);
-	}
-	else {
-	    throw("DPI: Unimplemented instruction at ".strloc($reg[15]-8));
-	}
-    }
-    elsif ( $instruction{kind} eq 'MUL' ) {
-	$reg[$instruction{rd}] = mul($reg[$instruction{rm}],$reg[$instruction{rs}], $instruction{accumulate}?$instruction{rn}:0,$instruction{sbit});
-	modreg($instruction{rd});
-    }
-    elsif ( $instruction{kind} eq 'MRS' ) {
-	throw("SPSR Not supported at ".strloc($mempos)) if $instruction{rbit};
-	$reg[$instruction{rd}] = compose_psr();
-	modreg($instruction{rd});
-    }
-    elsif ( $instruction{kind} eq 'MSR' ) {
-	throw("SPSR Not supported at ".strloc($mempos)) if $instruction{rbit};
-	my $oldpsr = dec2bin(compose_psr(), 32);
-	my $sugpsr = dec2bin($instruction{srcimmed}
-			     ? ror($instruction{source},$instruction{offset})
-			     : $reg[$instruction{source}], 32);
-	my $newpsr = '';
-	my @fields = reverse split('',$instruction{fields});
-	$newpsr .= armbits($fields[3]?$sugpsr:$oldpsr,31,8);
-	$newpsr .= armbits($fields[2]?$sugpsr:$oldpsr,23,8);
-	$newpsr .= armbits($fields[1]?$sugpsr:$oldpsr,15,8);
-	$newpsr .= armbits($fields[0]?$sugpsr:$oldpsr,7,8);
-	decompose_psr(bin2dec($newpsr));
-    }
-    elsif ( $instruction{kind} eq 'CLZ' ) {
-	my ($lz) = dec2bin($reg[$instruction{rm}],32) =~ m/^(0*)/;
-	$reg[$instruction{rd}] = length($lz);
-	modreg($instruction{rd});
-    }
-    elsif ( $instruction{kind} eq 'ARMPL' ) {
-	if ( $instruction{opcode} eq 'OUT' &&defined($instruction{immediate})){
-	    print "$instruction{immediate}\n";
-	}
-	elsif ( $instruction{opcode} eq 'OUT' ) {
-	    my $fmt = $instruction{format};
-	    foreach ( $instruction{reg} ) {
-		#,$instruction{regb},$instruction{regc}){
-		last unless defined($_);
-		if ( $fmt eq 'HEX' ) { printf "R%d = 0x%08x\n",$_,$reg[$_] }
-		elsif ( $fmt eq 'BYTES' ) {
-		    printf "%c",$reg[$_];
-		}
-		else { printf "R%d = %d\n",$_,$reg[$_] }
-	    }
-	}
-	elsif ( $instruction{opcode} eq 'END' ) { last }
-	elsif ( $instruction{opcode} eq 'DIE' ) {
-	    throw("Died at ".strloc($reg[15]-8));
-	}
-	else {
-	    throw("Undefined instruction of type $instruction{kind} at " .
-		  strloc($reg[15]-8));
-	}
-    }
-    elsif ( $instruction{kind} eq 'MEMOR' ) { # LDR/STR
-	my $addr = $reg[$instruction{rn}];
-	my $myoffset;
-	if ( $instruction{offsetimmed} ) { $myoffset = $instruction{offset} }
-	else {
-	    my $temp;
-	    ($myoffset,$temp) = do_shift($reg[$instruction{offset}],$instruction{shifttype},$instruction{offsetshift},0,0);
-	}
-	if ( $instruction{update} <= 0 ) { # Pre-indexed addressing
-	    $addr += $myoffset*($instruction{positive}?1:-1);
-	}
-
-	if ( $instruction{isload} ) {
-	    $reg[$instruction{rd}] = getmem($addr,$instruction{byte});
-	    modreg($instruction{rd});
-	}
-	else {
-	    setmem($addr,$reg[$instruction{rd}],$instruction{byte});
-	}
-	$addr += $myoffset*($instruction{positive}?1:-1)
-	  if $instruction{update} > 0;
-
-	if ( $instruction{update} != 0 ) { # Writeback
-	    $reg[$instruction{rn}] = $addr;
-	    vprint "Writing $addr to R$instruction{rn}\n";
-	}
-    }
-    elsif ( $instruction{kind} eq 'LDM' ) { # LDM/STM
-	my $start_address = 0;
-	my $end_address = 0;
-	my $rn = $reg[$instruction{rn}];
-	my @registers = ();
-	for (my $i=0;$i <scalar(@{$instruction{registers}});$i++) {
-	    push @registers, $i if $instruction{registers}[$i]
-	}
-	my $length = scalar(@registers) * 4;
-	if ( !$instruction{pbit} && !$instruction{ubit} ) { # DA
-	    $start_address = $rn - $length;
-	    $end_address = $rn;
-	    $rn -= $length;
-	}
-	elsif ( !$instruction{pbit} && $instruction{ubit} ) { # IA
-	    $start_address = $rn;
-	    $end_address = $rn + $length - 4;
-	    $rn += $length if $instruction{update};
-	}
-	elsif ( $instruction{pbit} && !$instruction{ubit} ) { # DB
-	    $start_address = $rn - $length;
-	    $end_address = $rn - 4;
-	    $rn -= $length;
-	}
-	elsif ( $instruction{pbit} && $instruction{ubit} ) { # IB
-	    $start_address = $rn + 4;
-	    $end_address = $rn + $length;
-	    $rn += $length;
-	}
-	else { throw("Invalid P and U bits  at ".strloc($reg[15]-8)) }
-
-	for(my $addr=$start_address; $addr<=$end_address; $addr+=4) {
-	    my $num = shift @registers;
-	    if ( $instruction{isload} ) {
-		$reg[$num] = getmem($addr,0);
-		modreg($num);
-		vprint "Loading register R$num\n";
-	    }
-	    else {
-		setmem($addr,$reg[$num],0);
-		vprint "Storing register R$num\n";
-	    }
-	}
-	if ( $instruction{update} ) {
-	    $reg[$instruction{rn}] = $rn;
-	    modreg($instruction{rn});
-	    vprint "Updating base register\n";
-	}
-    }
-    elsif ( $instruction{kind} eq 'SWI' ) {
-	printf "SWI\t%8d\t%06X\n", $instruction{swi}, $instruction{swi} if $v >= 0;
-	my $linswi = $instruction{swi}-0x900000;
-	if ( $instruction{swi} == 0x11 ) { last } # OS_Exit
-	if ( $instruction{swi} == 0x12 ) { # ARMSIM_BKPT
-	    print "BKPT - Entering the debugger.\n";
-	    $debugnext = 1;
-	    if ( !$d ) {
-		$debugnormv = 0 if $v <= 0; $d = 1;
-		$OUT = $term->OUT if $term->OUT;
-	    }
-	}
-	elsif ( $instruction{swi} == 0x02 ) { printf "%c", $reg[0] }
-	elsif ( $instruction{swi} == 0xF00000 ) { }# IMB, see DDI0100E pg A2-29
-	elsif ( $instruction{swi} == 0xF00001 ) { }# IMB, see DDI0100E pg A2-29
-	elsif ( $linswi == 1 ) { last if $reg[0] == 0;
-	    throw('Died (via SWI) at ' . strloc($reg[15]-8) .
-		  ' (rc='.$reg[0].')');
-	}
-	else { throw("Unknown SWI, terminating at " . strloc($reg[15]-8)) }
-    }
-    elsif ( $instruction{kind} eq 'BKPT' ) {
-	print "BKPT - Entering the debugger.\n";
-	$debugnext = 1;
-	if ( !$d ) {
-	    $debugnormv = 0 if $v <= 0; $d = 1;
-	    $OUT = $term->OUT if $term->OUT;
-	}
-    }
-    else {
-	throw("Undefined instruction of type $instruction{kind} at " .
-	     strloc($reg[15]-8));
-    }
-
+    last if $last;
     $reg[15] += 4;			# Next instruction
 }
 if ( $mode == 2 ) {
@@ -1631,467 +1413,795 @@ else {
     print STDERR "Program complete.\n" if $v >= 0;
 }
 
-sub parse_instruction {
-    my ($binary,$decimal,$check_validity) = @_;
-
-    # Offset 31-0 like in comments, Length
-    my $kind = armbits($binary,27,3); # 00=DataProcess, 101=Branch,
-                                      # 01=Ld/St, 011 = local
-    # 00X DPI/MUL/CIES
-    # 010 LDR/STR
-    # 011 LDR/STR/ARMPL
-    # 100 LDM/STM
-    # 101 B/BL
-    # 110 Coprocessor [Unimplemented]
-    # 111 Coprocessor [Unimplemented]/SWI
-
-    my %instruction = ();
-    $instruction{binary} = $binary; # For the disassembler.
-
-    my $cond = armbits($binary,31,4);
-    foreach (keys %conds ) {
-	if ( $conds{$_} eq $cond ) { $instruction{cond} = $_; last }
+# Instruction implementations
+sub    Assemble_B { }
+sub      Decode_B { }
+sub     Execute_B {
+    my ($instruction) = @_;
+    if ( $instruction->{link} ) {
+	modreg(14,$reg[15]-4); # PC+8-8+4
+	vprint "Link: Return to instruction $reg[14]\n";
     }
-
-    my %default = %instruction; $default{kind} = 'UNKNOWN';
-
-
-    my $ismies = $kind eq '000' && armbits($binary,7,1) eq '1' &&
-	    armbits($binary,4,1) eq '1' &&
-	    !(armbits($binary,24,1) eq '0' and armbits($binary,6,2) eq '00');
-
-    if ( armbits($binary,27,4) eq '0000' and armbits($binary,7,4) eq '1001' ) {
-	# MUL, MLA, SMLAL, SMULL, UMLAL, UMULL
-	my $mulkind = armbits($binary,23,1);
-	if ( $mulkind eq '0' and armbits($binary,22,1) eq '0' ) {
-	    $instruction{kind} = 'MUL';
-	    $instruction{accumulate} = armbits($binary,21,1) eq '1' ? 1 : 0;
-	    $instruction{sbit} = armbits($binary,20,1) eq '1' ? 1 : 0;
-	    $instruction{rd} = armbitd($decimal,19,4);
-	    $instruction{rn} = armbitd($decimal,15,4);
-	    $instruction{rs} = armbitd($decimal,11,4);
-	    $instruction{rm} = armbitd($decimal,3,4);
-	}
-	elsif ( $mulkind eq '1' ) { # Long multiply
-	    # Unsupported
-	    $instruction{kind} = 'CONSTANT';
-	    $instruction{immediate} = $decimal
-	}
-	else {
-	    if ( $died ) { return \%default }
-	    else { throw('Unknown multiply at '.strloc($reg[15]-8).': '.
-			 bin2hex($binary)) }
-	}
-    }
-    elsif ( $ismies or $kind eq '010' or $kind eq '011' ) {
-	# Load, Store and NonStandard, including MIES
-	if ( armbitd($decimal,24,5) == 0b11111
-	     and $kind eq '011' and armbitd($decimal,7,4) == 0b1111
-	     and !$ismies ) {
-	    # arm.pl nonstandard
-	    $instruction{kind} = 'ARMPL';
-	    my $opcode = armbits($binary,19,4);
-	    if ( substr($opcode,0,2) eq '00' ) {
-		$instruction{opcode} = 'OUT';
-		if    ( $opcode eq '0001' ) { $instruction{format} = 'HEX'   }
-		elsif ( $opcode eq '0010' ) { $instruction{format} = 'BYTES' }
-		elsif ( $opcode eq '0011' ) { $instruction{format} = 'IMMED' }
-		else { $instruction{format} = 'DEFAULT' }
-		if ( $opcode eq '0011' ) {
-		    $instruction{immediate} = bin2dec(armbits($binary,15,8),1);
-		}
-		else {
-		    $instruction{reg} = armbitd($decimal,15,4);
-		}
-	    }
-	    elsif ( $opcode eq '0100' or $opcode eq '0101' ) {
-		$instruction{opcode} = $opcode eq '0100' ? 'END' : 'DIE';
-	    }
-	}
-	elsif ($ismies and armbitd($decimal,24,2) == 0b10 and
-	       armbitd($decimal,21,2) == 00 and armbitd($decimal,6,2) == 00){
-	    # SWP and SWPB
-	    if ( $died or !$check_validity ) { return \%default }
-	    else { throw('SWP and SWPB not supported at '.
-			 strloc($reg[15]-8). ': ' . bin2hex($binary)) }
-	}
-	else {
-	    $instruction{kind} = 'MEMOR';
-	    $instruction{isload} = armbits($binary,20,1)?1:0;
-	    $instruction{rd} = armbitd($decimal,15,4);
-	    $instruction{rn} = armbitd($decimal,19,4);
-	    $instruction{positive} = armbits($binary,23,1)?1:0;
-	    if ( $ismies ) { # Signed byte, double and half word access
-		my $mieskind = armbits($binary,20,1).armbits($binary,6,2);
-		if ( $mieskind eq '010' or $mieskind eq '011' ) {
-		    if ( $died or !$check_validity ) { return \%default }
-		    else { throw('Doubleword not supported at '.
-				 strloc($reg[15]-8). ': ' . bin2hex($binary)) }
-		}
-
-		$instruction{byte} = armbits($binary,5,1) ? 2 : 1;
-		$instruction{byte} *= -1 if armbits($binary,6,1);
-
-		if ( armbits($binary,22,1) ) { # Immediate offset
-		    $instruction{offset} = bin2dec(armbits($binary,11,4).
-						   armbits($binary, 3,4),0);
-		    $instruction{offsetimmed} = 1;
-		}
-		else {			# Register offset
-		    $instruction{offset} = armbitd($decimal,3,4);
-		    $instruction{offsetimmed} = 0;
-		    $instruction{shifttype} = -1; # No shift
-		    $instruction{offsetshift} = 0;
-		}
-	    }
-	    else { # Unsigned byte/word access
-		$instruction{byte} = armbits($binary,22,1)?1:0;
-		if ( !armbits($binary,25,1) ) { # Immediate offset
-		    $instruction{offset} = armbitd($decimal,11,12,0);
-		    $instruction{offsetimmed} = 1;
-		}
-		else {			# Register offset
-		    $instruction{offset} = armbitd($decimal,3,4);
-		    $instruction{offsetimmed} = 0;
-		    $instruction{shifttype} = armbitd($decimal,6,2)||-1;
-		    $instruction{offsetshift} = armbitd($decimal,11,5);
-		}
-	    }
-
-	    # Various unsupported strangeness
-	    my $P = armbitd($decimal,24,1);
-	    my $W = armbitd($decimal,21,1);
-	    if ( $W && !$P ) {
-		if ( $died ) { return \%default }
-		else { throw("LDR/STR T mode is not supported at ".
-			     strloc($reg[15]-8)) if $check_validity }
-	    }
-	    elsif ( $W && $P ) { # Pre-indexed
-		$instruction{update} = -1;
-	    }
-	    elsif ( !$P ) { # Post-indexed
-		$instruction{update} = 1;
-	    }
-	    elsif ( $P && !$W ) { $instruction{update} = 0 }
-	    $instruction{update} ||= 0;
-	}
-    }
-    elsif ( ($kind eq '000' or $kind eq '001') ) {
-	if ( armbitd($decimal,24,2) == 0b10 && armbitd($decimal,20,1) == 0 ) {
-	    # Control Instruction Extension Space (CIES)
-	    my $op1 = armbits($binary,22,2);
-	    my $op2 = armbits($binary,7,4);
-	    if ( $kind eq '000' && $op2 eq '0000' &&
-		 armbits($binary,21,1) eq '0' ) { # MRS
-		$instruction{kind} = 'MRS';
-		$instruction{rbit} = armbitd($decimal,22,1);
-		$instruction{rd} = armbitd($decimal,15,4);
-	    }
-	    elsif ((($kind eq '000' && $op2 eq '0000') or $kind eq '001') &&
-		   armbits($binary,21,1) eq '1' ) { # MSR
-		$instruction{kind} = 'MSR';
-		$instruction{rbit} = armbitd($decimal,22,0);
-		$instruction{fields} = armbitd($decimal,19,4);
-
-		# From DPI, but simplified
-		if ( armbitd($decimal,25,1) ) {
-		    my $immed = armbitd($decimal,7,8);
-		    my $offset = armbitd($decimal,11,4)*2;
-		    $instruction{offset} = $offset;
-		    $instruction{shifttype} = 3; # ROR
-		    $instruction{source} = $immed;
-		    $instruction{srcimmed} = 1;
-		}
-		else {
-		    $instruction{offset} = 0;
-		    $instruction{shifttype} = 3; # ROR
-		    $instruction{source} = armbitd($decimal,3,4);
-		    $instruction{srcimmed} = 0;
-		}
-	    }
-	    elsif ( $kind eq '001' && armbitd($decimal,21,1) ) {
-		$instruction{kind} = 'CONSTANT'; # UNSUPPORTED
-		$instruction{immediate} = $decimal;
-	    }
-	    elsif ( $op1 eq '01' && $op2 eq '0111' &&
-		    $instruction{cond} eq 'AL' ) { # BKPT
-		$instruction{kind} = 'BKPT';
-	    }
-	    elsif ( $op1 eq '01' && ( $op2 eq '0001' or $op2 eq '0011' ) ) {
-		# BX, BLX (Branch and Exchange)
-		$instruction{kind} = 'B';
-		$instruction{link} = armbitd($decimal,5,1);
-		$instruction{register} = armbitd($decimal,3,4);
-		$instruction{exchange} = 1;
-	    }
-	    elsif ( $op1 eq '11' && $op2 eq '0001' ) { # BKPT
-		$instruction{kind} = 'CLZ';
-		$instruction{rm} = armbitd($decimal,3,4);
-		$instruction{rd} = armbitd($decimal,15,4);
-	    }
-	    else {
-		$instruction{kind} = 'CONSTANT';
-		$instruction{immediate} = bin2dec($binary,1);
-		if ( $died or !$check_validity ) { return \%default }
-		else { throw('Undefined CIES instruction at '.
-			     strloc($reg[15]-8). ': ' . bin2hex($binary)) }
-	    }
-	}
-	else {
-	    # Data Processing Instruction
-	    $instruction{kind} = 'DPI';
-	    $instruction{opcode} = armbits($binary,24,4);
-	    $instruction{sbit} = armbitd($decimal,20,1);
-	    $instruction{rn} = armbitd($decimal,19,4);
-	    $instruction{rd} = armbitd($decimal,15,4);
-	    if ( armbits($binary,25,1) eq '1' ) {
-		my $immed = armbitd($decimal,7,8);
-		my $offset = armbitd($decimal,11,4)*2;
-		$instruction{offset} = $offset;
-		$instruction{offsetreg} = 0;
-		$instruction{shifttype} = 3; # ROR
-		$instruction{source} = $immed;
-		$instruction{srcimmed} = 1;
-	    }
-	    else {
-		$instruction{source} = armbitd($decimal,3,4);
-		$instruction{srcimmed} = 0;
-
-		# Shift register
-		my $oir = armbits($binary,4,1) eq '1' ? 1 : 0;
-		$instruction{shifttype} = armbitd($decimal,6,2) || -1;
-		$instruction{offsetreg} = $oir;
-		$instruction{offset} = armbitd($decimal, 11, $oir?4:5);
-	    }
-	}
-    }
-    elsif ( $kind eq '101' ) {		# Branch
-	$instruction{kind} = 'B';
-	$instruction{link} = armbitd($decimal,24,1);
-	$instruction{immediate} = armbitd($decimal,23,24);
-	if ( $instruction{immediate}&(1<<23) ) {
-	    $instruction{immediate} -= 1<<24;
-	}
-	$instruction{immediate} <<= 2;
-	$instruction{exchange} = 0;
-    }
-    elsif ( $kind eq '100' ) {		# LDM/STM
-	$instruction{kind} = 'LDM';
-	$instruction{isload} = armbitd($decimal,20,1);
-	$instruction{rn} = armbitd($decimal,19,4);
-	$instruction{pbit} = armbitd($decimal,24,1);
-	$instruction{ubit} = armbitd($decimal,23,1);
-	$instruction{update} = armbitd($decimal,21,1); # W bit
-	my @registers = reverse split('',armbits($binary,15,16));
-	$instruction{registers} = \@registers;
-    }
-    elsif ( armbits($binary,27,4) eq '1111' ) {
-	$instruction{kind} = 'SWI';
-	my $swi = armbitd($decimal,23,24);
-	$instruction{swi} = $swi;
-	#printf "SWI &%06X\n",$swi;
-    }
-    elsif ( !$check_validity ) {
-	$instruction{kind} = 'CONSTANT';
-	$instruction{immediate} = bin2dec($binary,1);
+    if ( $instruction->{exchange} ) {
+	throw("Thumb mode not supported at ".strloc($reg[15]-8))
+	  if $reg[15] & 1;
+	$reg[15] = $reg[$instruction->{register}] & 0xFFFFFFFE;
     }
     else {
-	if ( $died ) { return \%default }
-	else { throw('Undefined instruction at '.strloc($reg[15]-8).': '.
-	      bin2hex($binary)) }
+	$reg[15]+=$instruction->{immediate};
     }
-    return \%instruction;
+    vprint 'Branch: Branching to '.$reg[15]."\n";
+    modreg(15); # Hold of for display purposes, etc
+    return 1;
+}
+sub Disassemble_B {
+    my ($mempos, $cond, $instruction) = @_;
+    my $ins = 'B';
+    $ins .= 'L' if $instruction->{link};
+    $ins .= 'X' if $instruction->{exchange};
+    $ins .= "$cond ";
+    if ( $instruction->{exchange} ) {
+	$ins .= 'R'.$instruction->{register};
+    }
+    else {
+	my $baddr = $mempos+$instruction->{immediate}+8;
+	$ins .= $rlabels[$baddr]||sprintf('&%X',$baddr);
+    }
+    return $ins;
+}
+
+sub    Assemble_DPI { }
+sub      Decode_DPI {
+    my ($instruction) = @_;
+    my $decimal = $instruction->{decimal};
+    # Data Processing Instruction
+    $instruction->{kind} = DPI;
+    $instruction->{opcode} = armbitd($decimal,24,4);
+    $instruction->{sbit} = armbitd($decimal,20,1);
+    $instruction->{rn} = armbitd($decimal,19,4);
+    $instruction->{rd} = armbitd($decimal,15,4);
+    if ( armbitd($decimal,25,1) ) {
+	my $immed = armbitd($decimal,7,8);
+	my $offset = armbitd($decimal,11,4)*2;
+	$instruction->{offset} = $offset;
+	$instruction->{offsetreg} = 0;
+	$instruction->{shifttype} = 3; # ROR
+	$instruction->{source} = $immed;
+	$instruction->{srcimmed} = 1;
+    }
+    else {
+	$instruction->{source} = armbitd($decimal,3,4);
+	$instruction->{srcimmed} = 0;
+
+	# Shift register
+	my $oir = armbitd($decimal,4,1);
+	$instruction->{shifttype} = armbitd($decimal,6,2) || -1;
+	$instruction->{offsetreg} = $oir;
+	$instruction->{offset} = armbitd($decimal, 11, $oir?4:5);
+    }
+    return 1;
+}
+
+sub     Execute_DPI { # FIXME Optimize
+    my ($instruction) = @_;
+    # Operand 2
+    my $op2 = $instruction->{srcimmed} ?
+      $instruction->{source} : $reg[$instruction->{source}];
+    my $offset = $instruction->{offsetreg} ?
+      $reg[$instruction->{offset}] : $instruction->{offset};
+
+    ($op2, $fopco) = do_shift($op2,$instruction->{shifttype},
+			      $offset,$instruction->{srcimmed});
+
+    my $opcode = $instruction->{opcode};
+    my $rn = $instruction->{rn};
+    my $rd = $instruction->{rd};
+    my $S = $instruction->{sbit};
+    $DPIExecutors[$opcode]($rd,$rn,$op2,$S) or
+      	throw("DPI: Unimplemented instruction at ".strloc($reg[15]-8));
+    return 1;
+}
+sub Disassemble_DPI {
+    my ($mempos, $cond, $instruction) = @_;
+    my $ins = $rdpi[$instruction->{opcode}];
+    $ins .= $cond;
+
+    # TST, TEQ, CMP, CMN
+    $ins.= 'S' if $instruction->{sbit} and $instruction->{opcode} != 0b1000 and
+      $instruction->{opcode} != 0b1001 and $instruction->{opcode} != 0b1010
+	and $instruction->{opcode} != 0b1011;
+    $ins .= ' ';
+
+    $ins .= 'R'.$instruction->{rd}.', ' if $instruction->{opcode} != 0b1000 and
+      $instruction->{opcode} != 0b1001 and $instruction->{opcode} != 0b1010
+	and $instruction->{opcode} != 0b1011;
+
+    $ins .= 'R'.$instruction->{rn}.', ' if $instruction->{opcode} != 0b1101 and
+      $instruction->{opcode} != 0b1111; # MOV and MVN
+
+    # Operand 2
+    if ( $instruction->{srcimmed} ) {
+	$ins .= sprintf('&%X',$instruction->{source});
+	if ( $instruction->{offset} ) {
+	    if ( $instruction->{srcimmed} ) {
+		$ins .= ', '.$instruction->{offset}; # Immediates are ROR
+	    }
+	    else {
+		$ins .= ', '.offset_to_str($instruction->{shifttype},0,$instruction->{offset});
+	    }
+	}
+    }
+    else {
+	$ins .= 'R'.$instruction->{source};
+	if ( $instruction->{offset} || $instruction->{offsetreg} || $instruction->{shifttype} >= 0 ) {
+	    $ins .= ', '.offset_to_str($instruction->{shifttype},$instruction->{offsetreg},$instruction->{offset});
+	}
+    }
+    return $ins;
+}
+
+sub DPI_AND { modreg($_[0], armand($reg[$_[1]], $_[2]      ,         $_[3]));1}
+sub DPI_EOR { modreg($_[0], armxor($reg[$_[1]], $_[2]      ,         $_[3]));1}
+sub DPI_SUB { modreg($_[0], armsub($reg[$_[1]], $_[2]      ,      1, $_[3]));1}
+sub DPI_RSB { modreg($_[0], armsub($_[2]      , $reg[$_[1]],      1, $_[3]));1}
+sub DPI_ADD { modreg($_[0], armadd($reg[$_[1]], $_[2]      ,      0, $_[3]));1}
+sub DPI_ADC { modreg($_[0], armadd($reg[$_[1]], $_[2]      , $C?1:0, $_[3]));1}
+sub DPI_SBC { modreg($_[0], armsub($reg[$_[1]], $_[2]      ,      0, $_[3]));1}
+sub DPI_RSC { modreg($_[0], armsub($_[2]      , $reg[$_[1]],      0, $_[3]));1}
+sub DPI_TST {               armand($reg[$_[1]], $_[2]      ,             1) ;1}
+sub DPI_TEQ {               armor ($reg[$_[1]], $_[2]      ,             1) ;1}
+sub DPI_CMP {               armsub($reg[$_[1]], $_[2]      ,      1,     1) ;1}
+sub DPI_CMN {               armadd($reg[$_[1]], $_[2]      ,      0,     1) ;1}
+sub DPI_ORR { modreg($_[0], armor ($reg[$_[1]], $_[2]      ,         $_[3]));1}
+sub DPI_MOV { modreg($_[0], armor ($_[2]      , 0          ,         $_[3]));1}
+sub DPI_BIC { modreg($_[0], armand($reg[$_[1]],~$_[2]      ,         $_[3]));1}
+sub DPI_MVN { modreg($_[0], armor (0          ,~$_[2]      ,         $_[3]));1}
+
+sub    Assemble_MUL { }
+sub      Decode_MUL {
+    my ($instruction) = @_;
+    my $decimal = $instruction->{decimal};
+    # MUL, MLA, SMLAL, SMULL, UMLAL, UMULL
+    my $longmul = armbitd($decimal,23,1);
+    if ( !$longmul and !armbitd($decimal,22,1) ) {
+	$instruction->{kind} = MUL;
+	$instruction->{accumulate} = armbitd($decimal,21,1);
+	$instruction->{sbit} = armbitd($decimal,20,1);
+	$instruction->{rd} = armbitd($decimal,19,4);
+	$instruction->{rn} = armbitd($decimal,15,4);
+	$instruction->{rs} = armbitd($decimal,11,4);
+	$instruction->{rm} = armbitd($decimal,3,4);
+    }
+    elsif ( $longmul ) { # Long multiply
+	# Unsupported
+	#$instruction->{kind} = CONSTANT;
+	#$instruction->{immediate} = $decimal
+	return 0;
+    }
+    else {
+	#if ( $died ) { return 0 }
+	#else { throw('Unknown multiply at '.strloc($reg[15]-8).': '.
+	#	     sprintf('%X',$decimal)) }
+	return 0;
+    }
+    return 1;
+}
+sub     Execute_MUL {
+    my ($instruction) = @_;
+    modreg($instruction->{rd}, mul($reg[$instruction->{rm}],$reg[$instruction->{rs}], $instruction->{accumulate}?$instruction->{rn}:0, $instruction->{sbit}));
+    return 1;
+}
+sub Disassemble_MUL {
+    my ($mempos, $cond,$instruction) = @_;
+    my $ins = $instruction->{accumulate}?'MLA':'MUL';
+    $ins .= $instruction->{sbit}?"S$cond ":"$cond ";
+    $ins .= "R$instruction->{rd}, R$instruction->{rm}, R$instruction->{rs}";
+    $ins .= ", R$instruction->{rn}" if $instruction->{accumulate};
+    return $ins;
+}
+
+sub    Assemble_MRS { }
+sub      Decode_MRS {
+    my ($instruction) = @_;
+    $instruction->{kind} = MRS;
+    $instruction->{rbit} = armbitd($instruction->{decimal},22,1);
+    $instruction->{rd} = armbitd($instruction->{decimal},15,4);
+    return 1;
+}
+sub     Execute_MRS {
+    my ($instruction) = @_;
+    throw("SPSR Not supported at ".strloc($mempos)) if $instruction->{rbit};
+    modreg($instruction->{rd},compose_psr());
+    return 1;
+}
+sub Disassemble_MRS {
+    my ($mempos, $cond,$instruction) = @_;
+    return 'MRS'.$cond.' R'.$instruction->{rd}.', '.($instruction->{rbit}?'SPSR':'CPSR');
+}
+
+sub    Assemble_MSR { }
+sub      Decode_MSR {
+    my ($instruction) = @_;
+    my $decimal = $instruction->{decimal};
+    $instruction->{kind} = MSR;
+    $instruction->{rbit} = armbitd($decimal,22,0);
+    $instruction->{fields} = armbitd($decimal,19,4);
+
+    # From DPI, but simplified
+    if ( armbitd($decimal,25,1) ) {
+	my $immed = armbitd($decimal,7,8);
+	my $offset = armbitd($decimal,11,4)*2;
+	$instruction->{offset} = $offset;
+	$instruction->{shifttype} = 3; # ROR
+	$instruction->{source} = $immed;
+	$instruction->{srcimmed} = 1;
+    }
+    else {
+	$instruction->{offset} = 0;
+	$instruction->{shifttype} = 3; # ROR
+	$instruction->{source} = armbitd($decimal,3,4);
+	$instruction->{srcimmed} = 0;
+    }
+    return 1;
+}
+sub     Execute_MSR {
+    my ($instruction) = @_;
+    throw("SPSR Not supported at ".strloc($mempos)) if $instruction->{rbit};
+    my $oldpsr = dec2bin(compose_psr(), 32);
+    my $sugpsr = dec2bin($instruction->{srcimmed}
+			 ? ror($instruction->{source},$instruction->{offset})
+			 : $reg[$instruction->{source}], 32);
+    my $newpsr = '';
+    my @fields = reverse split('',$instruction->{fields});
+    $newpsr .= armbits($fields[3]?$sugpsr:$oldpsr,31,8);
+    $newpsr .= armbits($fields[2]?$sugpsr:$oldpsr,23,8);
+    $newpsr .= armbits($fields[1]?$sugpsr:$oldpsr,15,8);
+    $newpsr .= armbits($fields[0]?$sugpsr:$oldpsr,7,8);
+    decompose_psr(bin2dec($newpsr));
+    return 1;
+}
+sub Disassemble_MSR {
+    my ($mempos, $cond,$instruction) = @_;
+
+    my $ins = 'MSR'.$cond.' '.($instruction->{rbit}?'SPSR':'CPSR');
+    my $fieldstr = '';
+    my @fields = reverse split('',$instruction->{fields});
+    $fieldstr .= 'c' if $fields[0]; $fieldstr .= 'x' if $fields[1];
+    $fieldstr .= 's' if $fields[2]; $fieldstr .= 'f' if $fields[3];
+    throw("No fields in MSR at ".strloc($mempos))
+      if !$fieldstr;
+    $ins .= '_'.$fieldstr unless $fieldstr eq 'cxsf';
+    $ins .= ', ';
+    if ( $instruction->{srcimmed} ) {
+	$ins.=sprintf('&%X',ror($instruction->{source},$instruction->{offset}))
+    }
+    else { $ins .= 'R'.$instruction->{source} }
+    return $ins;
+}
+
+sub    Assemble_CLZ { }
+sub      Decode_CLZ {
+    my ($instruction) = @_;
+    $instruction->{kind} = CLZ;
+    $instruction->{rm} = armbitd($instruction->{decimal},3,4);
+    $instruction->{rd} = armbitd($instruction->{decimal},15,4);
+    return 1;
+}
+sub     Execute_CLZ { # FIXME - Optimize (?)
+    my ($instruction) = @_;
+    my ($lz) = dec2bin($reg[$instruction->{rm}],32) =~ m/^(0*)/;
+    modreg($instruction->{rd},length($lz));
+    return 1;
+}
+sub Disassemble_CLZ {
+    my ($mempos, $cond,$instruction) = @_;
+    return 'CLZ'.$cond.' R'.$instruction->{rd}.', R'.$instruction->{rm};
+}
+
+sub    Assemble_ARMPL { }
+sub      Decode_ARMPL {
+    my ($instruction) = @_;
+    my $opcode = armbitd($instruction->{decimal},19,4);
+    if    ( $opcode == 0b0000 ) { $instruction->{format} = DEFAULT }
+    elsif ( $opcode == 0b0001 ) { $instruction->{format} = HEX     }
+    elsif ( $opcode == 0b0010 ) { $instruction->{format} = BYTES   }
+    elsif ( $opcode == 0b0011 ) { $instruction->{format} = IMMED   }
+    else  { return 0 }
+    $instruction->{kind}   = ARMPL;
+    $instruction->{opcode} = OUT;
+    if ( $opcode == 0b0011 ) {
+	$instruction->{immediate} = bin2dec(armbits($instruction->{binary},15,8),1)
+    }
+    else { $instruction->{reg} = armbitd($instruction->{decimal},15,4) }
+    return 1;
+}
+sub     Execute_ARMPL {
+    my ($instruction) = @_;
+    throw("Undefined instruction of type ARMPL at ".strloc($reg[15]-8))
+      unless $instruction->{opcode} == OUT;
+    if ( defined($instruction->{immediate}) ) {
+	print "$instruction->{immediate}\n";
+    }
+    elsif ( $instruction->{opcode} == OUT ) {
+	my $fmt = $instruction->{format};
+	foreach ( $instruction->{reg} ) {
+	    #,$instruction->{regb},$instruction->{regc}){
+	    last unless defined($_);
+	    if ( $fmt == HEX ) { printf "R%d = 0x%08x\n",$_,$reg[$_] }
+	    elsif ( $fmt == BYTES ) {
+		printf "%c",$reg[$_];
+	    }
+	    else { printf "R%d = %d\n",$_,$reg[$_] }
+	}
+    }
+    return 1;
+}
+sub Disassemble_ARMPL {
+    my ($mempos,$cond,$instruction) = @_;
+    throw("Undefined instruction of type ARMPL at ".strloc($reg[15]-8))
+      unless $instruction->{opcode} == OUT;
+    my $ins = 'OUT';
+    if    ( $instruction->{format} == HEX   ) { $ins .= 'S' }
+    elsif ( $instruction->{format} == BYTES ) { $ins .= 'B' }
+    $ins .= "$cond ";
+
+    if($instruction->{format} == 'IMMED' ) {
+	$ins .= sprintf( $instruction->{format} == HEX ? '&%X' : '#%d',
+			 $instruction->{immediate});
+    }
+    else {
+	$ins .= 'R'.$instruction->{reg};
+    }
+    return $ins;
+}
+sub      Decode_ARMEND { $_[0]->{kind} = ARMEND; $_[0]->{swi} = 0x11 }
+sub Disassemble_ARMEND { return 'END'  }
+sub      Decode_ARMDIE { $_[0]->{kind} = ARMDIE; $_[0]->{swi} = 0x13 }
+sub Disassemble_ARMDIE { return 'DIE'  }
+sub      Decode_BKPT   { $_[0]->{kind} = BKPT; $_[0]->{swi} = 0x12 }
+sub Disassemble_BKPT   { return 'BKPT' }
+
+sub    Assemble_MEMOR { }
+sub      Decode_MEMOR {
+    my ($instruction,$ismies) = @_;
+    my $decimal = $instruction->{decimal};
+    $instruction->{kind} = MEMOR;
+    $instruction->{isload} = armbitd($decimal,20,1);
+    $instruction->{rd} = armbitd($decimal,15,4);
+    $instruction->{rn} = armbitd($decimal,19,4);
+    $instruction->{positive} = armbitd($decimal,23,1);
+    if ( $ismies ) { # Signed byte, double and half word access
+	my $mieskind=(armbitd($decimal,20,1)<<2)|armbitd($decimal,6,2);
+	if ( $mieskind == 0b010 or $mieskind == 0b011 ) {
+	    #if ( $died or !$check_validity ) { return \%default }
+	    #else { throw('Doubleword not supported at '.
+	    #strloc($reg[15]-8). ': ' . sprintf('%X',$decimal)) }
+	    return 0;
+	}
+
+	$instruction->{byte} = armbitd($decimal,5,1) ? 2 : 1;
+	$instruction->{byte} *= -1 if armbitd($decimal,6,1);
+
+	if ( armbitd($decimal,22,1) ) { # Immediate offset
+	    $instruction->{offset} =
+	      (armbitd($decimal,11,4)<<4) | armbitd($decimal, 3,4);
+	    $instruction->{offsetimmed} = 1;
+	}
+	else {			# Register offset
+	    $instruction->{offset} = armbitd($decimal,3,4);
+	    $instruction->{offsetimmed} = 0;
+	    $instruction->{shifttype} = -1; # No shift
+	    $instruction->{offsetshift} = 0;
+	}
+    }
+    else { # Unsigned byte/word access
+	$instruction->{byte} = armbitd($decimal,22,1);
+	if ( !armbitd($decimal,25,1) ) { # Immediate offset
+	    $instruction->{offset} = armbitd($decimal,11,12,0);
+	    $instruction->{offsetimmed} = 1;
+	}
+	else {			# Register offset
+	    $instruction->{offset} = armbitd($decimal,3,4);
+	    $instruction->{offsetimmed} = 0;
+	    $instruction->{shifttype} = armbitd($decimal,6,2)||-1;
+	    $instruction->{offsetshift} = armbitd($decimal,11,5);
+	}
+    }
+
+    # Various unsupported strangeness
+    my $P = armbitd($decimal,24,1);
+    my $W = armbitd($decimal,21,1);
+    if ( $W && !$P ) {
+	#if ( $died ) { return \%default }
+	#else { throw("LDR/STR T mode is not supported at ".
+	#	     strloc($reg[15]-8)) if $check_validity }
+	return 0;
+    }
+    elsif ( $W && $P ) { # Pre-indexed
+	$instruction->{update} = -1;
+    }
+    elsif ( !$P ) { # Post-indexed
+	$instruction->{update} = 1;
+    }
+    elsif ( $P && !$W ) { $instruction->{update} = 0 }
+    $instruction->{update} ||= 0;
+    return 1;
+}
+sub     Execute_MEMOR {
+    my ($instruction) = @_;
+    my $addr = $reg[$instruction->{rn}];
+    my $myoffset;
+    if ( $instruction->{offsetimmed} ) { $myoffset = $instruction->{offset} }
+    else {
+	my $temp;
+	($myoffset,$temp) = do_shift($reg[$instruction->{offset}],$instruction->{shifttype},$instruction->{offsetshift},0,0);
+    }
+    if ( $instruction->{update} <= 0 ) { # Pre-indexed addressing
+	$addr += $myoffset*($instruction->{positive}?1:-1);
+    }
+
+    if ( $instruction->{isload} ) {
+	modreg($instruction->{rd}, getmem($addr,$instruction->{byte}));
+    }
+    else {
+	setmem($addr,$reg[$instruction->{rd}],$instruction->{byte});
+    }
+
+    if ( $instruction->{update} != 0 ) { # Writeback
+	$addr += $myoffset*($instruction->{positive}?1:-1)
+	  if $instruction->{update} > 0;
+	modreg($instruction->{rn},$addr);
+	vprint "Writing $addr to R$instruction->{rn}\n";
+    }
+    return 1;
+}
+sub Disassemble_MEMOR {
+    my ($mempos, $cond, $instruction) = @_;
+    my $ins = $instruction->{isload}?'LDR':'STR';
+    $ins .= $cond;
+    $ins .= 'S' if $instruction->{byte} < 0;
+    $ins .= 'H' if abs($instruction->{byte}) == 2;
+    $ins .= 'B' if abs($instruction->{byte}) == 1;
+    $ins .= " R$instruction->{rd}, [R$instruction->{rn}";
+    $ins .= ']' if $instruction->{update} > 0;
+    $ins .= ', ';
+    $ins .= '#' if $instruction->{offsetimmed};
+    $ins .= '-' unless $instruction->{positive};
+    $ins .= 'R' unless $instruction->{offsetimmed};
+    $ins .= $instruction->{offset};
+    $ins .= ', '.offset_to_str($instruction->{shifttype},1,$instruction->{offsetshift}) if !$instruction->{offsetimmed} && $instruction->{shifttype} > 0 && $instruction->{offsetshift} > 0;
+    $ins .= ']' if $instruction->{update} <= 0;
+    $ins .= '!' if $instruction->{update} < 0;
+    #$ins .= ' FIXME';
+    return $ins;
+}
+
+sub    Assemble_LDM { }
+sub      Decode_LDM {
+    my ($instruction) = @_;
+    my $decimal = $instruction->{decimal};
+    $instruction->{kind} = LDM;
+    $instruction->{isload} = armbitd($decimal,20,1);
+    $instruction->{rn} = armbitd($decimal,19,4);
+    $instruction->{pbit} = armbitd($decimal,24,1);
+    $instruction->{ubit} = armbitd($decimal,23,1);
+    $instruction->{update} = armbitd($decimal,21,1); # W bit
+    # FIXME Optimize:
+    my @registers = reverse split('',armbits($instruction->{binary},15,16));
+    $instruction->{registers} = \@registers;
+    return 1;
+}
+sub     Execute_LDM { # FIXME - Optimize
+    my ($instruction) = @_;
+    my $start_address = 0;
+    my $end_address = 0;
+    my $rn = $reg[$instruction->{rn}];
+    my @registers = ();
+    for (my $i=0;$i <scalar(@{$instruction->{registers}});$i++) {
+	push @registers, $i if $instruction->{registers}[$i]
+    }
+    my $length = scalar(@registers) * 4;
+    if ( !$instruction->{pbit} && !$instruction->{ubit} ) { # DA
+	$start_address = $rn - $length + 4;
+	$end_address = $rn;
+	$rn -= $length;
+    }
+    elsif ( !$instruction->{pbit} && $instruction->{ubit} ) { # IA
+	$start_address = $rn;
+	$end_address = $rn + $length - 4;
+	$rn += $length if $instruction->{update};
+    }
+    elsif ( $instruction->{pbit} && !$instruction->{ubit} ) { # DB
+	$start_address = $rn - $length;
+	$end_address = $rn - 4;
+	$rn -= $length;
+    }
+    elsif ( $instruction->{pbit} && $instruction->{ubit} ) { # IB
+	$start_address = $rn + 4;
+	$end_address = $rn + $length;
+	$rn += $length;
+    }
+    else { throw("Invalid P and U bits  at ".strloc($reg[15]-8)) }
+
+    for(my $addr=$start_address; $addr<=$end_address; $addr+=4) {
+	my $num = shift @registers;
+	if ( $instruction->{isload} ) {
+	    $reg[$num] = getmem($addr,0);
+	    modreg($num);
+	    vprint "Loading register R$num\n";
+	}
+	else {
+	    setmem($addr,$reg[$num],0);
+	    vprint "Storing register R$num\n";
+	}
+    }
+    if ( $instruction->{update} ) {
+	modreg($instruction->{rn}, $rn);
+	vprint "Updating base register\n";
+    }
+    return 1;
+}
+sub Disassemble_LDM {
+    my ($mempos, $cond, $instruction) = @_;
+    my $ins = $instruction->{isload}?'LDM':'STM';
+    $ins .= $cond;
+    foreach ( keys %extra ) {
+	next if m/^[^DI]/; # FIXME -v
+	$ins .= $_ if $extra{$_} eq $instruction->{pbit}.$instruction->{ubit};
+    }
+    $ins .= " R$instruction->{rn}";
+    $ins .= '!' if $instruction->{update};
+    $ins .= ', {';
+    my @reglist = ();
+    foreach ( 0..15 ) {
+	if ( $instruction->{registers}[$_] ) {
+	    if ( $_ > 0 and $instruction->{registers}[$_-1] ) {
+		$reglist[-1] =~ s/\s*-\s*R\d+|$/-R$_/;
+	    }
+	    else { push @reglist, "R$_" }
+	}
+    }
+    $ins .= join(', ',@reglist).'}'; # Does not support ^.
+    return $ins;
+}
+
+sub    Assemble_SWI { }
+sub      Decode_SWI {
+    my ($instruction) = @_;
+    $instruction->{kind} = SWI;
+    $instruction->{swi} = armbitd($instruction->{decimal},23,24);
+    return 1;
+}
+sub     Execute_SWI {
+    my ($instruction) = @_;
+    nprintf "SWI\t%8d\t%06X\n", $instruction->{swi}, $instruction->{swi};
+
+    $SWI{$instruction->{swi}} ||=
+      sub {throw(sprintf("Unknown SWI %X, terminating at %s",$_[0],strloc($reg[15]-8)))};
+    return $SWI{$instruction->{swi}}($instruction->{swi});
+}
+sub Disassemble_SWI {
+    my ($mempos, $cond,$instruction) = @_;
+    return sprintf('SWI%s &%06X',$cond,$instruction->{swi});
+}
+sub SWI_OS_Write0 { printf "%c", $reg[0]; return 1 }
+sub SWI_OS_Exit   { $last = 1; return 1 }
+sub SWI_ARMSIM_BKPT {
+    print "BKPT - Entering the debugger.\n";
+    $debugnext = 1;
+    if ( !$d ) {
+      $debugnormv = 0 if $v <= 0; $d = 1;
+      $OUT = $term->OUT if $term->OUT;
+    }
+    return 1;
+}
+sub SWI_ARMSIM_DIE { throw("Died at ".strloc($reg[15]-8)) }
+sub SWI_sys_exit  {
+    if ( $reg[0] == 0 ) { $last = 1 }
+    else {throw('Died (via SWI) at '.strloc($reg[15]-8).' (rc='.$reg[0].')')}
+    return 1;
+}
+sub SWI_sys_ioctl {
+    printf "Sys_ioctl(fd=%d, cmd=%d, arg=%x)\n", $reg[0], $reg[1], $reg[2]
+      if $v >= 0;
+    my $cmd = $reg[1];
+    my $cmdNR = $cmd & 0xff;
+    my $cmdType = ($cmd >> 8) & 0xff;
+    my $cmdSize = ($cmd >> 16) & 0x3fff;
+    my $cmdDir = ($cmd >> 30) & 0x3;
+    if ($cmdType == 0x54) {           # various terminal cmds: ord('T')==0x54
+      if ($cmdNR == 0x01) {           # TCGETS
+          print "Doing TCGETS\n" if $v >= 0;
+          my $termios = $reg[2];      # arg is (struct termios *)
+          memset($termios, 0, 4*4+5); # clear part of output structure
+      }
+    } elsif ($cmdType == 0x89) {      # various socket cmds
+    }
+    $reg[0] = 0;                      # result
+    return 1;
+}
+sub SWI_sys_mmap {
+    my $args = $reg[0];
+    my ($start, $length, $prot, $flags, $fd, $offset) =
+      map getmem($args+$_*4), (0..5);
+    printf("Sys_mmap(args@%x: start=%x, length=%d, prot=%x,"
+          . " flags=%x, fd=%d, offset=%x)\n",
+         $reg[0], $start, $length, $prot, $flags, $fd, $offset)
+      if $v >= 0;
+    #define MAP_ANONYMOUS 0x20          /* don't use a file */
+    if ($flags & 0x20) {
+      # Anonymous mapping, just means: "give me some memory"
+      if ($length > 1e6) {
+          $reg[0] = -12;              # ENOMEM
+      } else {
+          $length = ($length + $pageSize - 1) & ~($pageSize-1); # round up
+          my $addr = $heapBase;
+          $heapBase += $length;
+          printf "Sys_mmap: allocating %x bytes, heapSize = %dKB\n",
+              $length, ($heapBase - $heapStart)/1024
+                  if $v >= 0;
+          $reg[0] = $addr;
+      }
+    } else {
+      # Don't support mapping files
+      $reg[0] = -22;                  # EINVAL
+    }
+    return 1;
+}
+sub SWI_sys_getuid { $reg[0] = 0; return 1 }
+sub SWI_sys_getgid { $reg[0] = 0; return 1 }
+
+sub Condition_EQ {  $Z }
+sub Condition_NE { !$Z }
+sub Condition_CS {  $C }
+sub Condition_CC { !$C }
+sub Condition_MI {  $N }
+sub Condition_PL { !$N }
+sub Condition_VS {  $V }
+sub Condition_VC { !$V }
+sub Condition_HI {  $C && !$Z }
+sub Condition_LS { !$C ||  $Z }
+sub Condition_GE {  $N ==  $V }
+sub Condition_LT {  $N !=  $V }
+sub Condition_GT { !$Z && ( $N == $V ) }
+sub Condition_LE {  $Z || ( $N != $V ) }
+sub Condition_AL { 1 }
+sub Condition_NV { 0 }
+
+# Declassifiers help determine which decoder to use
+sub Declassify_DPI0 {
+    my ($instruction) = @_;
+    my $decimal = $instruction->{decimal};
+    if ( armbitd($decimal,7,1) && armbitd($decimal,4,1) ) {
+	return Declassify_MIES($instruction);
+    }
+    if ( armbitd($decimal,24,2) == 0b10 && !armbitd($decimal,20,1) ) {
+	return Declassify_CIES($instruction);
+    }
+    return Decode_DPI($instruction);
+}
+sub Declassify_MIES {
+    my ($instruction) = @_;
+    my $decimal = $instruction->{decimal};
+    if ( armbitd($decimal,7,4) == 0b1001 && !armbitd($decimal,24,1) ) {
+	return Decode_MUL($instruction); # Not actually MIES
+    }
+    my $miesop = (armbitd($decimal,20,1)<<2)+armbitd($decimal,6,2);
+    if ( armbitd($decimal,24,1) && !armbitd($decimal,23,1) && !armbitd($decimal,21,1) && $miesop == 0 ) {
+	# SWP and SWPB
+	#if ( $died or !$check_validity ) { return \%default }
+	#else { throw('SWP and SWPB not supported at '.
+	#	     strloc($reg[15]-8). ': ' . sprintf('%X',$decimal)) }
+	return 0;
+    }
+    return 0 unless armbitd($decimal,6,2);
+    return Decode_MEMOR($instruction,1);
+}
+sub Declassify_CIES {
+    my $decimal = $_[0]->{decimal};
+    # Control Instruction Extension Space (CIES)
+    my $op1 = armbitd($decimal,22,2);
+    my $op2 = armbitd($decimal,7,4);
+    if    (!$op2 && (!$op1 || $op1 == 0b10)) { return Decode_MRS(@_) }
+    elsif (!$op2 &&  armbitd($decimal,21,1)) { return Decode_MSR(@_) }#Reg MSR
+    elsif ( $op1 == 1 && $op2 == 0b0111 && $_[0]->{cond} == AL ) {
+	return Decode_BKPT(@_);
+    }
+    elsif ( $op1 == 1 && ( $op2 == 1 or $op2 == 0b0011 ) ) {
+	# BX, BLX (Branch and Exchange)
+	my ($instruction) = @_;
+	$instruction->{kind} = B;
+	$instruction->{link} = armbitd($decimal,5,1);
+	$instruction->{register} = armbitd($decimal,3,4);
+	$instruction->{exchange} = 1;
+	return 1;
+    }
+    elsif ( $op1 == 0b11 && $op2 ==0b0001 ) { return Decode_CLZ(@_) }
+    else {
+	#if ( $died or !$check_validity ) { return \%default }
+	#else { throw('Undefined CIES instruction at '.
+	#	     strloc($reg[15]-8). ': ' . sprintf('%X',$decimal)) }
+	return 0;
+    }
+}
+sub Declassify_DPI1 {
+    my ($instruction) = @_;
+    my $decimal = $instruction->{decimal};
+    if ( armbitd($decimal,24,2) == 0b10 && !armbitd($decimal,20,1) ) {
+	# Immediate MSR
+	return Decode_MSR($instruction) if armbitd($decimal,21,1);
+	return 0; # Undefined instruction
+    }
+    return Decode_DPI($instruction);
+}
+sub Declassify_LDRI { return Decode_MEMOR(@_) }
+sub Declassify_LDRR {
+    return armbitd($_[0]->{decimal},4,1)
+      ? Declassify_ARMPL(@_) : Decode_MEMOR(@_);
+}
+sub Declassify_LDM  { return Decode_LDM(@_) }
+sub Declassify_B    {
+    my ($instruction) = @_;
+    $instruction->{kind} = B;
+    $instruction->{link} = armbitd($instruction->{decimal},24,1);
+    my $immediate = armbitd($instruction->{decimal},23,24);
+    if ( $immediate & (1<<23) ) {
+	$immediate -= 1<<24;
+    }
+    $instruction->{immediate} = ($immediate << 2);
+    $instruction->{exchange} = 0;
+    return $instruction;
+}
+sub Declassify_CPLS { return 0 }
+sub Declassify_CPSI {
+    return $DeclassifyCPSI[armbitd($_[0]->{decimal},24,1)](@_);
+}
+sub Declassify_ARMPL {
+    my ($instruction) = @_;
+    my $decimal = $instruction->{decimal};
+    return 0 unless ( armbitd($decimal,24,5) == 0b11111 )
+      && ( armbitd($decimal,7,4) == 0xF );
+    my $opcode = armbitd($decimal,19,4);
+    return $DeclassifyARMPL[$opcode](@_);
+}
+
+sub decode_instruction {
+    my ($binary,$decimal,$check_validity) = @_;
+
+    my $kind = armbitd($decimal,27,3);
+
+    my %instruction = ( binary => $binary, decimal => $decimal );
+    $instruction{cond} = armbitd($decimal,31,4)&0xF;
+    my %default = %instruction; $default{kind} = UNKNOWN;
+
+    my $rv = $DeclassifyByKind[$kind](\%instruction);
+    return \%instruction if $rv;
+    throw(sprintf('Instruction decoding failed for %s: %X',strloc($reg[15]-8),
+		  $decimal)) if $check_validity;
+    return \%default;
 }
 
 sub disassemble_instruction {
-    my %instruction = %{shift @_};
-    my ($mempos) = @_;
+    my ($mempos,$instruction) = @_;
 
-    my $cond = $instruction{cond};
-    $cond = '' if $cond eq 'AL';
+    my $cond = $conds[$instruction->{cond}];
+    $cond = '' if $cond eq $conds[AL];
+    if ( $d && $mempos >= $dbgstart ) { return '[DEBUG INFO]' }
 
-    if ( $d && $dbgstart > -1 && $mempos >= $dbgstart ) {
-	return '[DEBUG INFO]';
-    }
-    elsif ( $instruction{kind} eq 'CONSTANT' or $mempos{$mempos} ) {
-	return 'DCW #'.bin2hex($instruction{binary});
-    }
-    elsif ( $instruction{kind} eq 'SWI' ) {
-	 return sprintf('SWI%s &%06X',$cond,$instruction{swi});
-    }
-    elsif ( $instruction{kind} eq 'BKPT' ) {
-	 return 'BKPT';
-    }
-    elsif ( $instruction{kind} eq 'CLZ' ) {
-	return 'CLZ'.$cond.' R'.$instruction{rd}.', R'.$instruction{rm};
-    }
-    elsif ( $instruction{kind} eq 'MRS' ) {
-	return 'MRS'.$cond.' R'.$instruction{rd}.', '.($instruction{rbit}?'SPSR':'CPSR');
-    }
-    elsif ( $instruction{kind} eq 'MSR' ) {
-	my $ins = 'MSR'.$cond.' '.($instruction{rbit}?'SPSR':'CPSR');
-	my $fieldstr = '';
-	my @fields = reverse split('',$instruction{fields});
-	$fieldstr .= 'c' if $fields[0]; $fieldstr .= 'x' if $fields[1];
-	$fieldstr .= 's' if $fields[2]; $fieldstr .= 'f' if $fields[3];
-	throw("No fields in MSR at ".strloc($mempos)) if !$fieldstr;
-	$ins .= '_'.$fieldstr unless $fieldstr eq 'cxsf';
-	$ins .= ', ';
-	if ( $instruction{srcimmed} ) {
-	    $ins.=sprintf('&%X',ror($instruction{source},$instruction{offset}))
-	}
-	else { $ins .= 'R'.$instruction{source} }
-	return $ins;
-    }
-    elsif ( $instruction{kind} eq 'MUL' ) {
-	my $ins = $instruction{accumulate}?'MLA':'MUL';
-	$ins .= $instruction{sbit}?"S$cond ":"$cond ";
-	$ins .= "R$instruction{rd}, R$instruction{rm}, R$instruction{rs}";
-	$ins .= ", R$instruction{rn}" if $instruction{accumulate};
-	return $ins;
-    }
-    elsif ( $instruction{kind} eq 'DPI' ) {
-	my $ins = '';
-	foreach ( keys %instructions ) {
-	    if ( $instructions{$_} eq $instruction{opcode} ) {
-		$ins = $_;
-		last;
-	    }
-	}
-	$ins .= $cond;
-
-	# TST, TEQ, CMP, CMN
-	$ins.= 'S' if $instruction{sbit} and $instruction{opcode} ne '1000' and
-	  $instruction{opcode} ne '1001' and $instruction{opcode} ne '1010'
-	    and $instruction{opcode} ne '1011';
-	$ins .= ' ';
-
-	$ins .= 'R'.$instruction{rd}.', ' if $instruction{opcode} ne '1000' and
-	  $instruction{opcode} ne '1001' and $instruction{opcode} ne '1010'
-	    and $instruction{opcode} ne '1011';
-
-	$ins .= 'R'.$instruction{rn}.', ' if $instruction{opcode} ne '1101' and
-	  $instruction{opcode} ne '1111'; # MOV and MVN
-
-	# Operand 2
-	if ( $instruction{srcimmed} ) {
-	    $ins .= sprintf('&%X',$instruction{source});
-	    if ( $instruction{offset} ) {
-		if ( $instruction{srcimmed} ) {
-		    $ins .= ', '.$instruction{offset}; # Immediates are ROR
-		}
-		else {
-		    $ins .= ', '.offset_to_str($instruction{shifttype},0,$instruction{offset});
-		}
-	    }
-	}
-	else {
-	    $ins .= 'R'.$instruction{source};
-	    if ( $instruction{offset} || $instruction{offsetreg} || $instruction{shifttype} >= 0 ) {
-		$ins .= ', '.offset_to_str($instruction{shifttype},$instruction{offsetreg},$instruction{offset});
-	    }
-	}
-	return $ins;
-    }
-    elsif ( $instruction{kind} eq 'B' ) {
-	my $ins = 'B';
-	$ins .= 'L' if $instruction{link};
-	$ins .= 'X' if $instruction{exchange};
-	$ins .= "$cond ";
-	if ( $instruction{exchange} ) {
-	    $ins .= 'R'.$instruction{register};
-	}
-	else {
-	    my $baddr = $mempos+$instruction{immediate}+8;
-	    $ins .= $rlabels[$baddr]||sprintf('&%X',$baddr);
-	}
-	return $ins;
-    }
-    elsif ( $instruction{kind} eq 'ARMPL' && $instruction{opcode} eq 'OUT' ) {
-	my $ins = 'OUT';
-	if    ( $instruction{format} eq 'HEX'   ) { $ins .= 'S' }
-	elsif ( $instruction{format} eq 'BYTES' ) { $ins .= 'B' }
-	$ins .= "$cond ";
-
-	if($instruction{format} eq 'IMMED' and $instruction{format} eq 'HEX') {
-	    $ins .= sprintf('&%X',$instruction{immediate});
-	}
-	elsif ( $instruction{format} eq 'IMMED' ) {
-	    $ins .= sprintf('#%d',$instruction{immediate});
-	}
-	else {
-	    $ins .= 'R'.$instruction{reg};
-	}
-	return $ins;
-    }
-    elsif ( $instruction{kind} eq 'ARMPL' and ($instruction{opcode} eq 'END' or $instruction{opcode} eq 'DIE') ) {
-	return $instruction{opcode}.$cond;
-    }
-    elsif ( $instruction{kind} eq 'MEMOR' ) {
-	my $ins = $instruction{isload}?'LDR':'STR';
-	$ins .= $cond;
-	$ins .= 'S' if $instruction{byte} < 0;
-	$ins .= 'H' if abs($instruction{byte}) == 2;
-	$ins .= 'B' if abs($instruction{byte}) == 1;
-	$ins .= " R$instruction{rd}, [R$instruction{rn}";
-	$ins .= ']' if $instruction{update} > 0;
-	$ins .= ', ';
-	$ins .= '#' if $instruction{offsetimmed};
-	$ins .= '-' unless $instruction{positive};
-	$ins .= 'R' unless $instruction{offsetimmed};
-	$ins .= $instruction{offset};
-	$ins .= ', '.offset_to_str($instruction{shifttype},1,$instruction{offsetshift}) if !$instruction{offsetimmed} && $instruction{shifttype} > 0 && $instruction{offsetshift} > 0;
-	$ins .= ']' if $instruction{update} <= 0;
-	$ins .= '!' if $instruction{update} < 0;
-	#$ins .= ' FIXME';
-	return $ins;
-    }
-    elsif ( $instruction{kind} eq 'LDM' ) {
-	my $ins = $instruction{isload}?'LDM':'STM';
-	$ins .= $cond;
-	foreach ( keys %extra ) {
-	    next if m/^[^DI]/;
-	    $ins .= $_ if $extra{$_} eq $instruction{pbit}.$instruction{ubit};
-	}
-	$ins .= " R$instruction{rn}";
-	$ins .= '!' if $instruction{update};
-	$ins .= ', {';
-	my @reglist = ();
-	foreach ( 0..15 ) {
-	    if ( $instruction{registers}[$_] ) {
-		if ( $_ > 0 and $instruction{registers}[$_-1] ) {
-		    $reglist[-1] =~ s/\s*-\s*R\d+|$/-R$_/;
-		}
-		else { push @reglist, "R$_" }
-	    }
-	}
-	$ins .= join(', ',@reglist).'}'; # Does not support ^.
-	return $ins;
-    }
-
-    return "UNKNOWN";
+    return ($Disassemblers[exists $mempos{$mempos} ? CONSTANT
+			   : $instruction->{kind}]($mempos,$cond,$instruction)
+	    or 'UNKNOWN');
 }
 
-sub get_instruction {
-    my ($addr,$check_validity,$print_out) = @_;
-    $check_validity = 0 if $mode_d || ($dbgstart >= 0 && $addr >= $dbgstart);
+sub fetch_instruction {
+    my ($instruction,$check_validity) = @_;
+    my $iref = decode_instruction(dec2bin($instruction,32),
+				 $instruction,$check_validity);
 
-    my $instruction = getmem($addr,0);
-    my $fromcache = 0;
-    my %instruction = ();
-
-    if ( $cachelimit && exists $cache{$instruction} ) {
-	$cache{$instruction}{usage}++;
-	%instruction = %{$cache{$instruction}};
-	$fromcache = 1;
-    }
-    else {
-	%instruction = %{parse_instruction(dec2bin($instruction,32),
-					   $instruction,$check_validity)};
-	$instruction{usage} = 0;
-
-	# Cache management
-	$cache{$instruction} = \%instruction;
+    # Cache management
+    if ( $cachelimit ) {
+	$cache{$instruction} = $iref;
+	$cache{$instruction}{usage} = 0;
 	$cachesize++;
 	unshift @cachemon, $instruction;
 	if ( $#cachemon > $tcachelimit ) {
@@ -2108,12 +2218,33 @@ sub get_instruction {
 	    $cachesize -= $pcachelimit;
 	}
     }
+    return $iref;
+}
 
-    return \%instruction unless $print_out;
+sub get_instruction {
+    my ($addr,$check_validity,$print_out) = @_;
 
+    my $instruction = getword($addr);#getmem($addr,4);
+    my $fromcache = 0;
+    my $iref;
+
+    if ( exists $cache{$instruction} ) {
+	$iref = $cache{$instruction};
+	$iref->{usage}++;
+	$fromcache = 1;
+    }
+    else {
+	$check_validity = 0 if $mode_d || $addr >= $dbgstart;
+	$iref = fetch_instruction($instruction,$check_validity)
+    }
+
+    return $iref unless $print_out;
+
+    my %instruction = %$iref;
     my $binary = $instruction{binary};
+    $check_validity = 0 if $mode_d || $addr >= $dbgstart;
     if ( $mode == 2 and ( $v < 0 or $o ) and $check_validity ) {
-	print DIO "\t",disassemble_instruction(\%instruction,$addr),"\n";
+	print DIO "\t",disassemble_instruction($addr, \%instruction),"\n";
     }
     if ( $v >= 0 ) {
 	my $flags = (exists($breaks{$addr})?'b':($fromcache?'c':' ')).
@@ -2124,12 +2255,12 @@ sub get_instruction {
 
 	my $mps = sprintf '%X:', $addr;
 	$mps .= ' 'x(4-length($mps));
-	my $os = $mps." $flags$binary   ".bin2hex($binary);
-	$os .= "  ".disassemble_instruction(\%instruction,$addr)."\n";
+	my $os = $mps." $flags$binary   ".sprintf('%08X',$instruction);
+	$os .= "  ".disassemble_instruction($addr, \%instruction)."\n";
 	if ( $mode == 2 ) { print $os }
 	else { print STDERR $os }
     }
-    return \%instruction;
+    return $iref;
 }
 
 sub offset_to_str {
@@ -2402,6 +2533,7 @@ sub logicalsflags {
 }
 
 sub getmem {
+    use bytes;
     my ($index,$bytes,$write) = @_;
     $bytes = 4 unless $bytes;
     my $signed = 0; if ( $bytes < 0 ) { $signed = 1; $bytes = -$bytes }
@@ -2411,34 +2543,46 @@ sub getmem {
       if $index < 0;
     $memory .= chr(0)x($index-length($memory)+8) if length($memory) < $index+4;
 
-    my $result = 0;
     if ( defined($write) ) { # Write to memory
 	if ( $d && $mode == 3 && exists($breaks{$index-($index%4)}) ) {
 	    printf "Modifed word at 0x%08X at %s\n",$index,strloc($reg[15]-8);
 	    printf "  Old data 0x%08X\n", getmem($index-($index%4),0);
 	    $debugnext = 1;
 	}
-	if    ( $bytes == 1 ) {substr($memory,$index,$bytes, chr(    $write)) }
-	elsif ( $bytes == 2 ) {substr($memory,$index,$bytes,pack('v',$write)) }
-	elsif ( $bytes == 4 ) {substr($memory,$index,$bytes,pack('V',$write)) }
+	if    ( $bytes == 1 ) {substr($memory,$index,$bytes, chr(0xFF&$write))}
+	elsif ( $bytes == 2 ) {substr($memory,$index,$bytes,pack('v', $write))}
+	elsif ( $bytes == 4 ) {substr($memory,$index,$bytes,pack('V', $write))}
 	else { throw("Can't access memory on $bytes-byte alignment at ".
 		     strloc($reg[15]-8)) }
 	return;
-    } # Read from memory
-    elsif ( $bytes == 1 ) { $result = ord(substr($memory,$index,1)) }
+    }
+
+    # Read from memory
+    my $result = 0;
+    if ( $bytes == 1 ) { $result = ord(substr($memory,$index,1)) }
     elsif ( $bytes == 2 ) { $result = unpack('v',substr($memory,$index,2)) }
     elsif ( $bytes == 4 ) { $result = unpack('V',substr($memory,$index,4)) }
     else { throw("Can't access memory on $bytes-byte alignment at ".
 	  strloc($reg[15]-8)) }
 
-    $result |= $bytes == 1 ? 0xFFFFFF00 : 0xFFFF0000
-      if $signed && ($result & (1<<($bytes*8-1))); # Sign-extension
-    return $result;
+    return $result if !$signed || !($result & (1<<($bytes*8-1)));
+    return ($result | 0xFFFFFF00) if $bytes == 1;
+    return ($result | 0xFFFF0000) if $bytes == 2;
+    throw("Invalid signed size: $bytes at ".strloc($reg[15]-8));
 }
 
-sub setmem {
-    my ($index,$content,$bytes) = @_;
-    return getmem($index,$bytes,$content);
+sub setmem { return getmem($_[0],$_[2],$_[1]) }
+
+sub getword { # Highly optimized getmem(), for unsigned words only
+    my ($index) = @_;
+    throw("Access at incorrect alignment $index/w at ".strloc($reg[15]-8))
+      if $index & 3;
+    throw("Access at negative address $index at ".strloc($reg[15]-8))
+      if $index < 0;
+    $memory .= chr(0)x($index-length($memory)+8) if length($memory) < $index+4;
+
+    # Read from memory
+    return unpack('V',substr($memory,$index,4));
 }
 
 sub makechar {
@@ -2471,10 +2615,10 @@ sub MungeString {			# Munge string for use in DCB
 }
 
 sub modreg {				# Do any special things that need to
-    my ($reg) = @_;			# be done when a register has been
-    if ( $reg == 15 ) {			# modified
-	$reg[15]+=4;
-    }
+    my ($reg,$newval) = @_;		# be done when a register has been
+					# modified
+    $reg[$reg] = $newval if defined($newval);
+    if ( $reg == 15 ) { $reg[15]+=4 }
 }
 
 # Various and sundry type conversions
@@ -2536,11 +2680,13 @@ sub armbits { # Like substr, except taking $_[1] as 31-0. For convenient
 }
 sub armbitd { # Like armbits, but operating on actual numbers
     my ($x,$start,$len,$signed) = @_;
-    my $mask = 0;
+    my $mask = 2**$len-1;
     $len--;
-    for ( my $sl = $len;$sl>=0;$sl--) {
-	$mask |= 1<<($start-$sl);
-    }
+    $mask <<= ($start-$len);
+    #my $fmask = 0;
+    #for ( my $sl = $len;$sl>=0;$sl--) {
+    #$fmask |= 1<<($start-$sl);
+    #}
     throw("Signed unsupported by armbitd") if $signed;
     return ($x&$mask) >> ($start-$len);
 }
@@ -2575,8 +2721,8 @@ sub debugger_location { # Parse a debugger "Location".
 
 sub strloc {
     my ($pos) = @_;
-    return sprintf("instruction %x, %s",$pos,$lines[$pos]) if $lines[$pos];
-    return sprintf("instruction %x",$pos);
+    return sprintf("instruction %X, %s",$pos,$lines[$pos]) if $lines[$pos];
+    return sprintf("instruction %X",$pos);
 }
 
 sub dlerr {
@@ -2622,25 +2768,26 @@ sub ror {
 sub do_shift {
     my ($op2, $type, $offset, $offsetreg, $srcimmed) = @_;
     my $fopco = $C;
-    if ( $type == 0 ) { $op2 += $offset }
+    if ( $type <= 0 && !$offset ) { return ($op2, $fopco) unless $offset }
+    elsif ( $type == 0 ) { $op2 += $offset }
     elsif ( $type == -1 ) { # LSL
 	my $carrymask = 1 << (32-$offset);
-	$fopco = $op2 & $carrymask?1:0 if $offset;
+	$fopco = $op2 & $carrymask?1:0;
 	$op2 <<= $offset;
     }
     elsif ( $type == 1 ) { # LSR
 	no integer;
+	$offset = 32 if $offset == 0 && !$offsetreg;
 	my $carrymask = 1 << ($offset-1);
 	$fopco = $op2 & $carrymask?1:0;
-	$offset = 32 if $offset == 0 && !$offsetreg;
 	$op2 >>= $offset;
     }
     elsif ( $type == 2 ) { # ASR
 	no integer;
+	$offset = 32 if $offset == 0 && !$offsetreg;
 	my $carrymask = 1 << ($offset-1);
 	$fopco = $op2 & $carrymask?1:0;
 	my $highbit = $op2 & 0x80000000;
-	$offset = 32 if $offset == 0 && !$offsetreg;
 	$op2 >>= $offset;
 	if ( $highbit ) {
 	    my $highmask = $offset == 32 ? 0xFFFFFFFF : ((1<<$offset)-1)<<(32-$offset);
@@ -2651,7 +2798,11 @@ sub do_shift {
 	if ( $offset > 0 || $offsetreg || $srcimmed ) {
 	    ($op2,$fopco) = ror($op2,$offset);
 	}
-	else { throw("RRX not supported at ".strloc($reg[15]-8)) }
+	else {
+	    no integer;
+	    $fopco = $op2&1;
+	    $op2 = ($C<<31)|($op2>>1);
+	}
     }
     return ($op2, $fopco);
 }
@@ -2677,6 +2828,13 @@ sub mul {
 	$Z = $res ? 0 : 1;
     }
     return $res;
+}
+
+sub memset {
+    my ($addr, $val, $bytes) = @_;
+    for (my $i = 0; $i<$bytes; $i++) {
+      setmem($addr+$i, $val, 1);
+    }
 }
 
 # Convert numbers to needed signed/unsigned format when used. Specify width
