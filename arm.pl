@@ -19,15 +19,26 @@ use constant {B => 0, DPI => 1, MUL => 2, MRS => 3, MSR => 4, CLZ => 5,
 use constant {EQ=>0, NE=>1, CS=>2,  CC=>3,  MI=>4,  PL=>5,  VS=>6,  VC=>7,
 	      HI=>8, LS=>9, GE=>10, LT=>11, GT=>12, LE=>13, AL=>14, NV=>15};
 
-my $VERSION='20060817'; # yyyymmdd
+my $VERSION='20060823'; # yyyymmdd
 
 $| = 1;					# Autoflush on
 
 # Load Compress:Zlib module, if available
 my $use_zlib = eval 'use Compress::Zlib;1' || 0;
+my $allow_readkey = eval 'use Term::ReadKey;1' || 0;
+
+# Load ARM ARGV
+my @arm_argv = ();
+for ( my $i=0; $i <= $#ARGV; $i++ ) {
+    if ( $ARGV[$i] eq '-' or $ARGV[$i] eq '--' ) {
+	@arm_argv = @ARGV[($i+1)..$#ARGV];
+	$#ARGV = $i-1;
+    }
+}
+@arm_argv = ($ARGV[0]||'arm.pl') if @arm_argv == 0;
+
 
 # Options
-
 my $v = 0;
 my $help = 0;
 my $man = 0;
@@ -49,8 +60,7 @@ show_help(2) if $man;
 $use_zlib = 0 if $no_zlib;
 $use_zlib = 0 if $mode_a && ( $mode_x || $mode_d );
 
-if ( $dump_debuginfo ) { $d = 1; $mode_x = 0; $mode_d = 1; $q = 1 }
-
+# Autodetect mode based on provided filename(s).
 if ( !$mode_a && !$mode_d && !$mode_x ) {
     if ( scalar(@ARGV) != 1 ) {		# Assume anything but one parameter
 	$mode_a = 1;			# should be assembled
@@ -77,6 +87,9 @@ if ( !$mode_a && !$mode_d && !$mode_x ) {
     }
 }
 
+if ( $dump_debuginfo ) {$d=1;$mode_a=0;$mode_x=0;$mode_d=1;$q=1}
+
+# Default output filename
 if ( $mode_a && !$mode_x && !$mode_d && !$o ) {
     $o = 'a.out';
 }
@@ -181,6 +194,11 @@ Print a brief help message and exits.
 =item B<--man>
 
 Display the full documentation, for which you may want to use a pager.
+
+=item B<-->
+
+Specifies that all subsequent command-line arguments should be passed
+to the ARM program being executed, I<including> argv[0].
 
 =back
 
@@ -307,6 +325,27 @@ L<http://nand.homelinux.com:8888/~nand/blosxom/>
 
 =back
 
+=head1 EXAMPLES
+
+=over 8
+
+=item B<arm.pl -d a.out>
+
+Automatically detect the format and of a.out and run it with debugging
+support (ARM Debugger in execute, allowing use of Debugging
+Information in Assembler and Disassembler).
+
+=item B<arm.pl -qx a.out>
+
+Execute a.out quietly.
+
+=item B<arm.pl -q busybox.bin -- echo -e Hello, world>
+
+(Presumably) execute busybox.bin with argv[0] set to "echo", and some
+command-line arguments in argv[1..4].
+
+=back
+
 =head1 BUGS
 
 None
@@ -380,19 +419,19 @@ my      $DecoderEval = '(';
 my     $ExecutorEval = '(';
 my $DisassemblerEval = ' ';
 my  $DPIExecutorEval = '(';
-for (my $i=0;$i<=$#conds;$i++ ) {
+for (my $i=0;$i<=$#conds;$i++ ) { # Generate functions for conditionals
     $conds{$conds[$i]} = sprintf('%04b',$i);
     $ConditionEval .= '\&Condition_'.$conds[$i].',';
 }
 my $swionly = 0;
-foreach ( @kinds, 0, @iswis ) {
+foreach ( @kinds, 0, @iswis ) { # Generate functions for instruction kinds
     ($swionly = 1, next) unless $_;
     $AssemblerEval     .= '\&Assemble_'.$_.',';
     $DecoderEval       .= '\&Decode_'.$_.',';
     $ExecutorEval      .= '\&Execute_'.($swionly?'SWI':$_).',';
     $DisassemblerEval  .= '\&Disassemble_'.$_.',';
 }
-foreach ( @rdpi ) {
+foreach ( @rdpi ) { # Generate functions for DPIs
     $DPIExecutorEval   .= '\&DPI_'.$_.',';
 }
 my    @Conditions = eval(   $ConditionEval.')');
@@ -428,9 +467,16 @@ my %SWI = ( 0x02 => \&SWI_OS_Write0,
 	    0x11 => \&SWI_OS_Exit,
 	    0x12 => \&SWI_ARMSIM_BKPT,
 	    0x13 => \&SWI_ARMSIM_DIE,
+	    0x14 => \&SWI_ARMSIM_GETC,
 	    0xF00000 => sub { }, # IMB All, see DDI0100E pg A2-29
 	    0xF00001 => sub { }, # IMB Range, see DDI0100E pg A2-29
 	    0x900001 => \&SWI_sys_exit,
+	    0x900003 => \&SWI_sys_read,
+	    0x900004 => \&SWI_sys_write,
+	    0x900005 => \&SWI_sys_open,
+	    0x900006 => \&SWI_sys_close,
+	    0x90000D => \&SWI_sys_time,
+	    0x900014 => \&SWI_sys_getpid,
 	    0x900018 => \&SWI_sys_getuid, # sys_getuid16
 	    0x90002F => \&SWI_sys_getgid, # sys_getgid16
 	    0x900031 => \&SWI_sys_getuid, # sys_geteuid16
@@ -1152,45 +1198,66 @@ if ( $d ) {
 	print "\narm.pl debugger, version $VERSION\n\n";
 	print "Try 'perldoc arm.pl' for help\n\n";
     }
-    print "Searching for debugging information..." if $mode == 3 || $v >= 0;
-    if ( substr($memory,length($memory)-8,4) !~ /^\|([ZD])BG$/ ) {
-	print "not found.\n" if $mode == 3 || $v >= 0;
+    if ( $elf ) {
+	if ( $dump_debuginfo ) {
+	    print "Use readelf -s to dump debuginfo.\n";
+	    exit;
+	}
+	nprint "Reading ELF debugging information..." if $mode == 3;
+	foreach ( `readelf --symbols "$ARGV[0]"` ) {
+	    next unless m/^\s*\d+:\s*([0-9a-f]+)\s+\d+\s+(FUNC)\s+\w+\s+\w+\s+\S+\s+($labelmatch)\s*$/;
+	    if ( $2 eq 'FUNC' ) {
+		$labels{$3} = hex($1);
+		$rlabels[hex($1)] = $3;
+	    }
+	    #print "$3 at 0x$1 is a $2\n";
+	}
     }
     else {
-	$use_zlib = 0 if $1 eq 'D';
-	if ( $1 eq 'Z' && !$use_zlib ) {
-	    print "The debugging information in this file is compressed and cannot be read.\n";
+	nprint "Searching for debugging information..." if $mode == 3;
+	if ( substr($memory,length($memory)-8,4) !~ /^\|([ZD])BG$/ ) {
+	    if ( $dump_debuginfo ) {
+		print "No debugging information found.\n";
+		exit if $dump_debuginfo;
+	    }
+	    nprint "not found.\n" if $mode == 3;
 	}
 	else {
-	    # $use_zlib is now whether or not the debuginfo is compressed.
-	    my $dbglen;
-	    my @debug;
-	    if ( $use_zlib ) {
-		print "decompressing..." if $mode == 3 || $v >= 0;
-		$dbglen = getmem(length($memory)-4,0);
-		$dbgstart = length($memory)-8-$dbglen;
-		@debug = split('\|',uncompress(substr($memory,$dbgstart)));
-		$dbgstart-- while $dbgstart % 4;
+	    $use_zlib = 0 if $1 eq 'D';
+	    if ( $1 eq 'Z' && !$use_zlib ) {
+		print "The debugging information in this file is compressed and cannot be read.\n";
 	    }
 	    else {
-		$dbglen = getmem(length($memory)-4,0);
-		$dbgstart = length($memory)-8-$dbglen;
-		@debug = split('\|',substr($memory,$dbgstart));
-	    }
-	    if ( $dump_debuginfo ) {
-		print join('|',@debug),'|',$use_zlib?'Z':'D',"BG\n";
-		exit;
-	    }
-	    elsif ( $debug[0] == $VERSION ) {
-		print "loaded $dbglen bytes..." if $mode == 3 || $v >= 0;
-		%labels = split(';',$debug[1]);
-		$rlabels[$labels{$_}] = $_ foreach keys %labels;
-		$mempos{$_} = 1 foreach split(';',$debug[2]);
-		@lines = split ';', $debug[3];
-		print "done.\n" if $mode == 3 || $v >= 0;
-	    }
-	    elsif ( $mode == 3 || $v >= 0 ) {
-		print "incompatible version $debug[0].\n";
+		# $use_zlib is now whether or not the debuginfo is compressed.
+		my $dbglen;
+		my @debug;
+		if ( $use_zlib ) {
+		    nprint "decompressing..." if $mode == 3;
+		    $dbglen = getmem(length($memory)-4,0);
+		    $dbgstart = length($memory)-8-$dbglen;
+		    @debug = split('\|',uncompress(substr($memory,$dbgstart)));
+		    $dbgstart-- while $dbgstart % 4;
+		}
+		else {
+		    $dbglen = getmem(length($memory)-4,0);
+		    $dbgstart = length($memory)-8-$dbglen;
+		    @debug = split('\|',substr($memory,$dbgstart));
+		}
+		if ( $dump_debuginfo ) {
+		    print join('|',@debug),'|',$use_zlib?'Z':'D',"BG\n";
+		    exit;
+		}
+		elsif ( $debug[0] == $VERSION ) {
+		    print "loaded $dbglen bytes..." if $mode == 3 || $v >= 0;
+		    %labels = split(';',$debug[1]);
+		    $rlabels[$labels{$_}] = $_ foreach keys %labels;
+		    $mempos{$_} = 1 foreach split(';',$debug[2]);
+		    @lines = split ';', $debug[3];
+		    print "done.\n" if $mode == 3 || $v >= 0;
+		}
+		elsif ( $mode == 3 || $v >= 0 ) {
+		    print "incompatible version $debug[0].\n";
+		}
 	    }
 	}
     }
@@ -1221,13 +1288,8 @@ if ( $mode == 2 ) {
 else {
     printf STDERR "Beginning execution at %s\n",strloc($startaddr) if $v >= 0;
 }
-#$reg[0] = 2;
-#$reg[1] = 0x1000;
-#setmem(0x1000,0x1010,4);
-#setmem(0x1004,0x1020,4);
-#setmem(0x1020,unpack('V',"-v\0\0"),4);
-$reg[15]=$startaddr+8; # PC, 2 ahead, multiply by four
 
+$reg[15]=$startaddr+8; # PC, 2 ahead, multiply by four
 # Memory allocation
 my $memSize = length($memory);
 my $pageSize = 0x1000;
@@ -1236,6 +1298,49 @@ $reg[13]=(($memSize+$pageSize-1) & (~($pageSize-1))) + $stackSize;
 my $heapStart = $reg[13];
 my $heapBase = $heapStart;
 #$reg[13]=length($memory)+0xF000;
+
+# Implement command-line:
+# http://uclibc.org/cgi-bin/viewcvs.cgi/trunk/uClibc/libc/sysdeps/linux/arm/crt1.S?rev=&view=markup
+#my @arm_argv = qw/echo -n www.busybox.net/;
+my $arm_argc = @arm_argv;
+my $arg_sp = $reg[13];
+my $argv_use_ptr = 1;
+my ($argv_list_start, $argv_start);
+if ( $argv_use_ptr ) {
+    $argv_list_start = $arg_sp+4*3;
+    $argv_start = $argv_list_start+4*($arm_argc+1);
+}
+else {
+    $argv_list_start = $arg_sp+4;
+    $argv_start = $arg_sp+4*($arm_argc+3);
+}
+getmem($arg_sp, 4, $arm_argc); $arg_sp += 4; # at SP: ARGC
+if ( $argv_use_ptr ) { # Sometimes:
+    getmem($arg_sp, 4, $argv_list_start); $arg_sp += 4; # at SP+4: &ARGV
+}
+foreach my $arg ( @arm_argv ) {
+    getmem($argv_list_start, 4, $argv_start);
+    foreach my $argchar ( split '', $arg ) {
+	getmem($argv_start,1,ord($argchar));
+	$argv_start++;
+    }
+    getmem($argv_start,1,0);
+    $argv_start++;
+    $argv_start++ while $argv_start % 4;
+    $argv_list_start+=4;
+    $arg_sp += 4 unless $argv_use_ptr;
+}
+if ( $argv_use_ptr ) {
+    getmem($argv_list_start, 4, 0); # NULL after ARGV
+}
+else {
+    getmem($arg_sp,4,0); $arg_sp += 4; # NULL after ARGV
+}
+getmem($arg_sp,4,0); $arg_sp += 4; # ENVP
+if ( $argv_use_ptr ) { }
+else {
+    getmem($arg_sp,4,0); $arg_sp += 4; # NULL
+}
 
 my $rmeight;
 my $died = 0;
@@ -1415,7 +1520,7 @@ else {
 
 # Instruction implementations
 sub    Assemble_B { }
-sub      Decode_B { }
+sub      Decode_B { } # Please see Declassify_B and Declassify_CIES below.
 sub     Execute_B {
     my ($instruction) = @_;
     if ( $instruction->{link} ) {
@@ -1497,9 +1602,8 @@ sub     Execute_DPI { # FIXME Optimize
     my $rn = $instruction->{rn};
     my $rd = $instruction->{rd};
     my $S = $instruction->{sbit};
-    $DPIExecutors[$opcode]($rd,$rn,$op2,$S) or
+    return $DPIExecutors[$opcode]($rd,$rn,$op2,$S) or
       	throw("DPI: Unimplemented instruction at ".strloc($reg[15]-8));
-    return 1;
 }
 sub Disassemble_DPI {
     my ($mempos, $cond, $instruction) = @_;
@@ -1588,7 +1692,7 @@ sub      Decode_MUL {
 }
 sub     Execute_MUL {
     my ($instruction) = @_;
-    modreg($instruction->{rd}, mul($reg[$instruction->{rm}],$reg[$instruction->{rs}], $instruction->{accumulate}?$instruction->{rn}:0, $instruction->{sbit}));
+    modreg($instruction->{rd}, mul($reg[$instruction->{rm}],$reg[$instruction->{rs}], $instruction->{accumulate}?$reg[$instruction->{rn}]:0, $instruction->{sbit}));
     return 1;
 }
 sub Disassemble_MUL {
@@ -1745,7 +1849,7 @@ sub Disassemble_ARMPL {
     elsif ( $instruction->{format} == BYTES ) { $ins .= 'B' }
     $ins .= "$cond ";
 
-    if($instruction->{format} == 'IMMED' ) {
+    if($instruction->{format} == IMMED ) {
 	$ins .= sprintf( $instruction->{format} == HEX ? '&%X' : '#%d',
 			 $instruction->{immediate});
     }
@@ -1886,20 +1990,30 @@ sub      Decode_LDM {
     $instruction->{pbit} = armbitd($decimal,24,1);
     $instruction->{ubit} = armbitd($decimal,23,1);
     $instruction->{update} = armbitd($decimal,21,1); # W bit
-    # FIXME Optimize:
-    my @registers = reverse split('',armbits($instruction->{binary},15,16));
+    my $r = armbitd($instruction->{decimal},15,16);
+    my $i = 0;
+    my $mask = 1<<$i;
+    my @registers = ();
+    while ( $i <= 15 ) {
+	if ( $r & $mask ) {
+	    push @registers, $i
+	}
+	$i++;
+	$mask <<= 1;
+    }
+    #foreach ( reverse split('',armbits($instruction->{binary},15,16));
     $instruction->{registers} = \@registers;
     return 1;
 }
-sub     Execute_LDM { # FIXME - Optimize
+sub     Execute_LDM {
     my ($instruction) = @_;
     my $start_address = 0;
     my $end_address = 0;
     my $rn = $reg[$instruction->{rn}];
-    my @registers = ();
-    for (my $i=0;$i <scalar(@{$instruction->{registers}});$i++) {
-	push @registers, $i if $instruction->{registers}[$i]
-    }
+    my @registers = @{$instruction->{registers}};#();
+    #for (my $i=0;$i <scalar(@{$instruction->{registers}});$i++) {
+    #  push @registers, $i if $instruction->{registers}[$i]
+    #}
     my $length = scalar(@registers) * 4;
     if ( !$instruction->{pbit} && !$instruction->{ubit} ) { # DA
 	$start_address = $rn - $length + 4;
@@ -1953,13 +2067,13 @@ sub Disassemble_LDM {
     $ins .= '!' if $instruction->{update};
     $ins .= ', {';
     my @reglist = ();
-    foreach ( 0..15 ) {
-	if ( $instruction->{registers}[$_] ) {
-	    if ( $_ > 0 and $instruction->{registers}[$_-1] ) {
-		$reglist[-1] =~ s/\s*-\s*R\d+|$/-R$_/;
-	    }
-	    else { push @reglist, "R$_" }
+    my $i=0;
+    foreach ( @{$instruction->{registers}} ) {
+	if ( $i > 0 and $instruction->{registers}[$i-1] == $_-1 ) {
+	    $reglist[-1] =~ s/\s*-\s*R\d+|$/-R$_/;
 	}
+	else { push @reglist, "R$_" }
+	$i++;
     }
     $ins .= join(', ',@reglist).'}'; # Does not support ^.
     return $ins;
@@ -1996,6 +2110,17 @@ sub SWI_ARMSIM_BKPT {
     return 1;
 }
 sub SWI_ARMSIM_DIE { throw("Died at ".strloc($reg[15]-8)) }
+sub SWI_ARMSIM_GETC {
+    throw("Term::ReadKey is not available at ".strloc($reg[15]-8))
+      unless $allow_readkey;
+    ReadMode(4);
+    my $c = ReadKey(0);
+    ReadMode(0);
+    throw("EOF\n") unless defined($c);
+    throw("^C\n") if -t STDIN && $c eq "\003";
+    $reg[0] = ord($c);
+    printf "%c",$reg[0];
+}
 sub SWI_sys_exit  {
     if ( $reg[0] == 0 ) { $last = 1 }
     else {throw('Died (via SWI) at '.strloc($reg[15]-8).' (rc='.$reg[0].')')}
@@ -2048,6 +2173,48 @@ sub SWI_sys_mmap {
     }
     return 1;
 }
+# Fetch null-terminated string from memory
+sub getstr {
+    my $ptr = shift;
+    my $str = '';
+    while (my $c = getmem($ptr++, 1)) {
+      $str .= chr($c);
+    }
+    $str;
+}
+sub SWI_sys_open {
+    my $pathP = $reg[0];
+    my $path = getstr($pathP);
+    printf "Sys_open(path=%s, flags=%x, mode=%o)\n", $path, $reg[1], $reg[2];
+    $reg[0]=5;                                # pick a file descriptor
+    1;
+}
+sub SWI_sys_read {
+    printf "Sys_read(fd=%d, buf=%x, count=%d)\n", $reg[0], $reg[1], $reg[2];
+    $reg[0]=$reg[2];                          # return expected quantity
+    1;
+}
+sub SWI_sys_write {
+    my $path = getstr($reg[1]);
+    if ( $v >= 0 || $reg[0] > 2 ) {
+	printf "Sys_write(fd=%d, buf=%x, count=%d)\t%s\n", $reg[0], $reg[1], $reg[2],$path;
+    }
+    else { print $path }
+    $reg[0]=$reg[2];                          # return expected quantity
+    1;
+}
+sub SWI_sys_close {
+    printf "Sys_close(fd=%d)\n", $reg[0];
+    $reg[0]=0;
+    1;
+}
+sub SWI_sys_time {
+    printf "Sys_time(timeP=%x)\n", $reg[0];
+    setmem($reg[0], time, 4);
+    $reg[0]=0;
+    1;
+}
+sub SWI_sys_getpid { print "GetPID\n"; $reg[0] = 1; return 1 }
 sub SWI_sys_getuid { $reg[0] = 0; return 1 }
 sub SWI_sys_getgid { $reg[0] = 0; return 1 }
 
@@ -2224,7 +2391,7 @@ sub fetch_instruction {
 sub get_instruction {
     my ($addr,$check_validity,$print_out) = @_;
 
-    my $instruction = getword($addr);#getmem($addr,4);
+    my $instruction = getword($addr);
     my $fromcache = 0;
     my $iref;
 
@@ -2247,11 +2414,9 @@ sub get_instruction {
 	print DIO "\t",disassemble_instruction($addr, \%instruction),"\n";
     }
     if ( $v >= 0 ) {
-	my $flags = (exists($breaks{$addr})?'b':($fromcache?'c':' ')).
-	  ($reg[15]-8 == $addr?'>':' ');
-	$flags = '>>' if $flags eq ' >';
-	$flags = ($fromcache?'c':' ') if !$d || $mode == 2;
-	$flags = '  ' if $d and !$debugnext and $flags eq '>>';
+	my $linetype = exists($breaks{$addr})?'b':($fromcache?'c':'');
+	my $active = (($reg[15]-8==$addr)&&(!$d||($d and $debugnext)))?'>':'';
+	my $flags = ($linetype||$active||' ').($active||' ');
 
 	my $mps = sprintf '%X:', $addr;
 	$mps .= ' 'x(4-length($mps));

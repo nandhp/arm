@@ -7,6 +7,8 @@ int main() {
   char *b = "this is a test string";
   char *c = " Zebras now available in full 16-bit color";
   char *d = "";
+  char t[128] = "";
+  char *f;
   int rands[10];
   int randsize = sizeof(rands)/sizeof(rands[0]);
   int x;
@@ -55,7 +57,20 @@ int main() {
   assert(atoi("") == 0);
   assert(atoi("0") == 0);
   assert(atoi("1982") == 1982);
+  
+  sprintf(t,"Testing a thingy, %d",12);
+  assert(strcmp(t,"Testing a thingy, 12") == 0);
+  sprintf(t,"");
+  assert(strcmp(t,"") == 0);
+  sprintf(t,"String %sing%%","Process");
+  assert(strcmp(t,"String Processing%") == 0);
+  assert((f = strchr(t,'P')) != NULL);
+  assert(strcmp(f,"Processing%") == 0);
 
+  assert(sqrt(9) == 3);
+  assert(pow(2,3) == 8);
+  printf("Sleeping 1...\n");
+  assert(sleep(1) == 0);
   printf("ok\n");
   return 0;
 }

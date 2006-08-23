@@ -1,3 +1,10 @@
+20060823
+	- Execution:    Implement additional SWIs
+	- Execution:    Add support for command-line arguments
+	- Execution:    Performed additional optimizations, e.g. in LDM/STM
+	- ARM Debugger: Add support for ELF debugging information
+	- Global Fixes: Finish performance improvements for LDM
+
 20060817
 	- Execution:    More performance improvements
 	- Global Fixes: Reorganized for added speed and clarity
