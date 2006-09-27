@@ -1611,17 +1611,19 @@ sub Disassemble_DPI {
     $ins .= $cond;
 
     # TST, TEQ, CMP, CMN
-    $ins.= 'S' if $instruction->{sbit} and $instruction->{opcode} != 0b1000 and
-      $instruction->{opcode} != 0b1001 and $instruction->{opcode} != 0b1010
-	and $instruction->{opcode} != 0b1011;
+    $ins.= 'S' if $instruction->{sbit} and $instruction->{opcode} != 0b1000
+      and $instruction->{opcode} != 0b1001
+	and $instruction->{opcode} != 0b1010
+	  and $instruction->{opcode} != 0b1011;
     $ins .= ' ';
 
-    $ins .= 'R'.$instruction->{rd}.', ' if $instruction->{opcode} != 0b1000 and
-      $instruction->{opcode} != 0b1001 and $instruction->{opcode} != 0b1010
-	and $instruction->{opcode} != 0b1011;
+    $ins .= 'R'.$instruction->{rd}.', ' if $instruction->{opcode} != 0b1000
+      and $instruction->{opcode} != 0b1001
+	and $instruction->{opcode} != 0b1010
+	  and $instruction->{opcode} != 0b1011;
 
-    $ins .= 'R'.$instruction->{rn}.', ' if $instruction->{opcode} != 0b1101 and
-      $instruction->{opcode} != 0b1111; # MOV and MVN
+    $ins .= 'R'.$instruction->{rn}.', ' if $instruction->{opcode} != 0b1101
+      and $instruction->{opcode} != 0b1111; # MOV and MVN
 
     # Operand 2
     if ( $instruction->{srcimmed} ) {
@@ -1644,22 +1646,22 @@ sub Disassemble_DPI {
     return $ins;
 }
 
-sub DPI_AND { modreg($_[0], armand($reg[$_[1]], $_[2]      ,         $_[3]));1}
-sub DPI_EOR { modreg($_[0], armxor($reg[$_[1]], $_[2]      ,         $_[3]));1}
-sub DPI_SUB { modreg($_[0], armsub($reg[$_[1]], $_[2]      ,      1, $_[3]));1}
-sub DPI_RSB { modreg($_[0], armsub($_[2]      , $reg[$_[1]],      1, $_[3]));1}
-sub DPI_ADD { modreg($_[0], armadd($reg[$_[1]], $_[2]      ,      0, $_[3]));1}
-sub DPI_ADC { modreg($_[0], armadd($reg[$_[1]], $_[2]      , $C?1:0, $_[3]));1}
-sub DPI_SBC { modreg($_[0], armsub($reg[$_[1]], $_[2]      ,      0, $_[3]));1}
-sub DPI_RSC { modreg($_[0], armsub($_[2]      , $reg[$_[1]],      0, $_[3]));1}
-sub DPI_TST {               armand($reg[$_[1]], $_[2]      ,             1) ;1}
-sub DPI_TEQ {               armor ($reg[$_[1]], $_[2]      ,             1) ;1}
-sub DPI_CMP {               armsub($reg[$_[1]], $_[2]      ,      1,     1) ;1}
-sub DPI_CMN {               armadd($reg[$_[1]], $_[2]      ,      0,     1) ;1}
-sub DPI_ORR { modreg($_[0], armor ($reg[$_[1]], $_[2]      ,         $_[3]));1}
-sub DPI_MOV { modreg($_[0], armor ($_[2]      , 0          ,         $_[3]));1}
-sub DPI_BIC { modreg($_[0], armand($reg[$_[1]],~$_[2]      ,         $_[3]));1}
-sub DPI_MVN { modreg($_[0], armor (0          ,~$_[2]      ,         $_[3]));1}
+sub DPI_AND { modreg($_[0], armand($reg[$_[1]], $_[2]      ,        $_[3]));1}
+sub DPI_EOR { modreg($_[0], armxor($reg[$_[1]], $_[2]      ,        $_[3]));1}
+sub DPI_SUB { modreg($_[0], armsub($reg[$_[1]], $_[2]      ,     1, $_[3]));1}
+sub DPI_RSB { modreg($_[0], armsub($_[2]      , $reg[$_[1]],     1, $_[3]));1}
+sub DPI_ADD { modreg($_[0], armadd($reg[$_[1]], $_[2]      ,     0, $_[3]));1}
+sub DPI_ADC { modreg($_[0], armadd($reg[$_[1]], $_[2]      ,$C?1:0, $_[3]));1}
+sub DPI_SBC { modreg($_[0], armsub($reg[$_[1]], $_[2]      ,     0, $_[3]));1}
+sub DPI_RSC { modreg($_[0], armsub($_[2]      , $reg[$_[1]],     0, $_[3]));1}
+sub DPI_TST {               armand($reg[$_[1]], $_[2]      ,            1) ;1}
+sub DPI_TEQ {               armor ($reg[$_[1]], $_[2]      ,            1) ;1}
+sub DPI_CMP {               armsub($reg[$_[1]], $_[2]      ,     1,     1) ;1}
+sub DPI_CMN {               armadd($reg[$_[1]], $_[2]      ,     0,     1) ;1}
+sub DPI_ORR { modreg($_[0], armor ($reg[$_[1]], $_[2]      ,        $_[3]));1}
+sub DPI_MOV { modreg($_[0], armor ($_[2]      , 0          ,        $_[3]));1}
+sub DPI_BIC { modreg($_[0], armand($reg[$_[1]],~$_[2]      ,        $_[3]));1}
+sub DPI_MVN { modreg($_[0], armor (0          ,~$_[2]      ,        $_[3]));1}
 
 sub    Assemble_MUL { }
 sub      Decode_MUL {
